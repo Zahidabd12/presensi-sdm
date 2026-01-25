@@ -3,7 +3,10 @@
 import { useEffect, useState, useRef } from 'react'
 import { handleAttendance } from '@/app/actions'
 import { getDistance } from 'geolib'
-import { LogOut, Camera, XCircle, CheckCircle, RefreshCw, AlertTriangle, Calendar } from 'lucide-react'
+import { 
+  LogOut, Camera, XCircle, CheckCircle, RefreshCw, 
+  AlertTriangle, Calendar, Repeat // Icon baru untuk switch
+} from 'lucide-react'
 import { createClient } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
 import { Html5Qrcode } from 'html5-qrcode'
@@ -12,7 +15,7 @@ const OFFICE_LOC = {
   latitude: -7.310985585337482, 
   longitude: 112.72895791145474
 } 
-const MAX_RADIUS = 500 
+const MAX_RADIUS = 500 // dalam meter 
 const SECRET_TOKEN = "ABSENSI-SDM-TOKEN-RAHASIA-2026" 
 
 export default function ScanPage() {
@@ -22,6 +25,9 @@ export default function ScanPage() {
   const [isSuccess, setIsSuccess] = useState(false)
   const [weekendReason, setWeekendReason] = useState('Lembur Project')
   
+  // State Kamera (Default: Belakang/Environment)
+  const [facingMode, setFacingMode] = useState<"environment" | "user">("environment")
+
   const router = useRouter()
   const supabase = createClient()
   const html5QrCodeRef = useRef<Html5Qrcode | null>(null)
@@ -34,10 +40,10 @@ export default function ScanPage() {
             return
         }
 
-        // Cek In-App Browser (IG/TikTok/WA sering blokir kamera)
+        // Cek In-App Browser
         const userAgent = navigator.userAgent || navigator.vendor;
         if (/Instagram|FBAN|FBAV|WhatsApp/.test(userAgent)) {
-            alert("⚠️ PERINGATAN: Jangan buka di browser Instagram/WA. Kamera mungkin error. Harap buka di Chrome/Safari/Browser bawaan.");
+            alert("⚠️ PERINGATAN: Jangan buka di browser Instagram/WA. Kamera mungkin error. Harap buka di Chrome/Safari.");
         }
 
         if (!navigator.geolocation) {
@@ -68,44 +74,63 @@ export default function ScanPage() {
     if (day === 0 || day === 6) {
         setStep('WEEKEND_CHECK') 
     } else {
-        startCamera() 
+        startCamera(facingMode) // Mulai dengan mode default
     }
   }
 
-  // --- LOGIC KAMERA YANG DIPERBAIKI ---
-  const startCamera = async () => {
+  // --- LOGIC START KAMERA ---
+  const startCamera = async (mode: "environment" | "user") => {
     setDebugMsg('')
     setStep('SCANNING')
 
     try {
-      // 1. Pancing Izin Kamera Dulu
+      // 1. Pancing Izin Kamera
       await navigator.mediaDevices.getUserMedia({ video: true })
 
-      // 2. Siapkan Scanner
-      const html5QrCode = new Html5Qrcode("reader")
-      html5QrCodeRef.current = html5QrCode
-
+      // 2. Siapkan Scanner jika belum ada
+      if (!html5QrCodeRef.current) {
+        html5QrCodeRef.current = new Html5Qrcode("reader")
+      }
+      
       const config = { fps: 10, qrbox: { width: 250, height: 250 } }
       
-      // 3. Coba Start dengan Kamera Belakang
-      try {
-          await html5QrCode.start({ facingMode: "environment" }, config, onScanSuccess, () => {})
-      } catch (errBack) {
-          console.warn("Gagal kamera environment, mencoba kamera user/default...", errBack)
-          // 4. FALLBACK: Jika kamera belakang error, pakai kamera apapun yang ada
-          await html5QrCode.start({ facingMode: "user" }, config, onScanSuccess, () => {})
-      }
+      // 3. Start Scanning sesuai Mode (Depan/Belakang)
+      await html5QrCodeRef.current.start(
+        { facingMode: mode }, 
+        config, 
+        onScanSuccess, 
+        () => {}
+      )
 
     } catch (err: any) {
+      // Error Handling
       setStep('READY')
-      // FIX: Handle error object yang aneh-aneh dari HP
       let errorText = "Gagal akses kamera."
       if (typeof err === 'string') errorText = err
       else if (err?.message) errorText = err.message
-      else if (err?.name) errorText = err.name // Kadang error cuma {name: "NotAllowedError"}
-      else errorText = JSON.stringify(err)
+      else if (err?.name) errorText = err.name 
+      
+      setDebugMsg(`❌ Error Kamera: ${errorText}. Coba refresh/tukar kamera.`)
+    }
+  }
 
-      setDebugMsg(`❌ Error Kamera: ${errorText}. Coba refresh atau buka di Chrome.`)
+  // --- FITUR GANTI KAMERA ---
+  const switchCamera = async () => {
+    if (html5QrCodeRef.current) {
+        try {
+            // Stop dulu kamera yang sekarang
+            if (html5QrCodeRef.current.isScanning) {
+                await html5QrCodeRef.current.stop()
+            }
+            // Ganti mode
+            const newMode = facingMode === "environment" ? "user" : "environment"
+            setFacingMode(newMode)
+            
+            // Nyalakan lagi dengan mode baru
+            await startCamera(newMode)
+        } catch (e) {
+            console.error("Gagal ganti kamera", e)
+        }
     }
   }
 
@@ -191,7 +216,7 @@ export default function ScanPage() {
                 </select>
                 <div className="flex gap-3">
                     <button onClick={() => setStep('READY')} className="flex-1 bg-gray-700 py-3 rounded-lg font-bold">Batal</button>
-                    <button onClick={startCamera} className="flex-1 bg-amber-600 hover:bg-amber-700 py-3 rounded-lg font-bold text-white">Lanjut</button>
+                    <button onClick={() => startCamera(facingMode)} className="flex-1 bg-amber-600 hover:bg-amber-700 py-3 rounded-lg font-bold text-white">Lanjut</button>
                 </div>
              </div>
         )}
@@ -200,6 +225,20 @@ export default function ScanPage() {
             <div className="bg-black rounded-2xl overflow-hidden shadow-2xl border border-gray-700 relative">
                 <div id="reader" className="w-full h-[300px] bg-black"></div>
                 <div className="absolute top-1/2 left-4 right-4 h-0.5 bg-red-500/50 shadow-[0_0_10px_rgba(239,68,68,0.8)] z-10"></div>
+                
+                {/* TOMBOL SWITCH KAMERA */}
+                <button 
+                  onClick={switchCamera} 
+                  className="absolute bottom-4 right-4 bg-white/20 hover:bg-white/40 backdrop-blur-md p-3 rounded-full text-white z-20 border border-white/30 shadow-lg"
+                  title="Putar Kamera"
+                >
+                  <Repeat size={24} />
+                </button>
+
+                {/* LABEL MODE KAMERA */}
+                <div className="absolute top-4 left-4 bg-black/50 px-3 py-1 rounded-full text-xs font-mono z-20">
+                    {facingMode === 'environment' ? 'Kamera Belakang' : 'Kamera Depan'}
+                </div>
             </div>
             <button onClick={stopCamera} className="mt-6 text-gray-400 underline text-sm block mx-auto hover:text-white">Batal</button>
         </div>

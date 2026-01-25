@@ -5,7 +5,7 @@ import { handleAttendance } from '@/app/actions'
 import { getDistance } from 'geolib'
 import { 
   LogOut, Camera, XCircle, CheckCircle, RefreshCw, 
-  AlertTriangle, Calendar, Repeat // Icon baru untuk switch
+  AlertTriangle, Calendar, Repeat 
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
@@ -15,7 +15,7 @@ const OFFICE_LOC = {
   latitude: -7.310985585337482, 
   longitude: 112.72895791145474
 } 
-const MAX_RADIUS = 500 // dalam meter 
+const MAX_RADIUS = 500 
 const SECRET_TOKEN = "ABSENSI-SDM-TOKEN-RAHASIA-2026" 
 
 export default function ScanPage() {
@@ -25,12 +25,22 @@ export default function ScanPage() {
   const [isSuccess, setIsSuccess] = useState(false)
   const [weekendReason, setWeekendReason] = useState('Lembur Project')
   
-  // State Kamera (Default: Belakang/Environment)
+  // Default kamera: environment (belakang)
   const [facingMode, setFacingMode] = useState<"environment" | "user">("environment")
 
   const router = useRouter()
   const supabase = createClient()
   const html5QrCodeRef = useRef<Html5Qrcode | null>(null)
+
+  useEffect(() => {
+    // Cleanup saat keluar halaman
+    return () => {
+        if (html5QrCodeRef.current?.isScanning) {
+            html5QrCodeRef.current.stop().catch(err => console.log("Cleanup error", err))
+            html5QrCodeRef.current.clear()
+        }
+    }
+  }, [])
 
   useEffect(() => {
     const init = async () => {
@@ -40,10 +50,9 @@ export default function ScanPage() {
             return
         }
 
-        // Cek In-App Browser
         const userAgent = navigator.userAgent || navigator.vendor;
         if (/Instagram|FBAN|FBAV|WhatsApp/.test(userAgent)) {
-            alert("⚠️ PERINGATAN: Jangan buka di browser Instagram/WA. Kamera mungkin error. Harap buka di Chrome/Safari.");
+            alert("⚠️ PERINGATAN: Jangan buka di browser Instagram/WA. Harap buka di Chrome/Safari.");
         }
 
         if (!navigator.geolocation) {
@@ -74,68 +83,103 @@ export default function ScanPage() {
     if (day === 0 || day === 6) {
         setStep('WEEKEND_CHECK') 
     } else {
-        startCamera(facingMode) // Mulai dengan mode default
+        startCamera(facingMode)
     }
   }
 
-  // --- LOGIC START KAMERA ---
+  // --- LOGIC KAMERA (DIPERBAIKI) ---
   const startCamera = async (mode: "environment" | "user") => {
     setDebugMsg('')
     setStep('SCANNING')
 
-    try {
-      // 1. Pancing Izin Kamera
-      await navigator.mediaDevices.getUserMedia({ video: true })
-
-      // 2. Siapkan Scanner jika belum ada
-      if (!html5QrCodeRef.current) {
-        html5QrCodeRef.current = new Html5Qrcode("reader")
-      }
-      
-      const config = { fps: 10, qrbox: { width: 250, height: 250 } }
-      
-      // 3. Start Scanning sesuai Mode (Depan/Belakang)
-      await html5QrCodeRef.current.start(
-        { facingMode: mode }, 
-        config, 
-        onScanSuccess, 
-        () => {}
-      )
-
-    } catch (err: any) {
-      // Error Handling
-      setStep('READY')
-      let errorText = "Gagal akses kamera."
-      if (typeof err === 'string') errorText = err
-      else if (err?.message) errorText = err.message
-      else if (err?.name) errorText = err.name 
-      
-      setDebugMsg(`❌ Error Kamera: ${errorText}. Coba refresh/tukar kamera.`)
-    }
-  }
-
-  // --- FITUR GANTI KAMERA ---
-  const switchCamera = async () => {
+    // 1. PASTIKAN BERSIH DULU (Stop instance lama jika ada)
     if (html5QrCodeRef.current) {
         try {
-            // Stop dulu kamera yang sekarang
             if (html5QrCodeRef.current.isScanning) {
                 await html5QrCodeRef.current.stop()
             }
-            // Ganti mode
-            const newMode = facingMode === "environment" ? "user" : "environment"
-            setFacingMode(newMode)
-            
-            // Nyalakan lagi dengan mode baru
-            await startCamera(newMode)
+            html5QrCodeRef.current.clear()
         } catch (e) {
-            console.error("Gagal ganti kamera", e)
+            console.log("Cleanup sebelum start error:", e)
         }
+    }
+
+    // 2. Beri jeda sedikit agar hardware kamera 'nafas'
+    await new Promise(r => setTimeout(r, 300))
+
+    try {
+      // 3. Buat Instance Baru
+      const html5QrCode = new Html5Qrcode("reader")
+      html5QrCodeRef.current = html5QrCode
+
+      const config = { 
+        fps: 10, 
+        qrbox: { width: 250, height: 250 },
+        aspectRatio: 1.0 
+      }
+      
+      // 4. Start (Tanpa pancingan getUserMedia manual lagi)
+      await html5QrCode.start(
+        { facingMode: mode }, 
+        config, 
+        onScanSuccess, 
+        (errorMessage) => {
+            // Ignore frame read errors (bising kalau dilog)
+        }
+      )
+
+    } catch (err: any) {
+      setStep('READY')
+      let errorText = "Gagal akses kamera."
+      
+      // Deteksi error spesifik
+      if (JSON.stringify(err).includes("NotReadableError") || err?.name === 'NotReadableError') {
+         errorText = "Kamera sibuk/terkunci. Coba tutup tab lain atau restart browser HP."
+      } else if (err?.message) {
+         errorText = err.message
+      }
+
+      setDebugMsg(`❌ ${errorText}`)
+      
+      // Fallback: Jika environment gagal, coba user (depan) otomatis
+      if (mode === 'environment') {
+          console.log("Fallback ke kamera depan...")
+          setFacingMode('user')
+          setTimeout(() => startCamera('user'), 500)
+      }
     }
   }
 
+  const switchCamera = async () => {
+     // Matikan dulu
+     setStep('READY') 
+     if (html5QrCodeRef.current) {
+         try {
+             if (html5QrCodeRef.current.isScanning) {
+                 await html5QrCodeRef.current.stop()
+             }
+         } catch(e) {}
+     }
+
+     // Ganti Mode
+     const newMode = facingMode === "environment" ? "user" : "environment"
+     setFacingMode(newMode)
+
+     // Start lagi dengan delay
+     setTimeout(() => {
+         startCamera(newMode)
+     }, 500)
+  }
+
   const onScanSuccess = async (decodedText: string) => {
-      await stopCamera()
+      // Stop scanning
+      if (html5QrCodeRef.current) {
+          try {
+            await html5QrCodeRef.current.stop()
+            html5QrCodeRef.current.clear()
+          } catch (e) {}
+      }
+
       setStep('RESULT')
       
       if (decodedText === SECRET_TOKEN) {
@@ -144,20 +188,6 @@ export default function ScanPage() {
          setDebugMsg('❌ QR Code Salah!')
          setIsSuccess(false)
       }
-  }
-
-  const stopCamera = async () => {
-    if (html5QrCodeRef.current) {
-        try { 
-            if (html5QrCodeRef.current.isScanning) {
-                await html5QrCodeRef.current.stop()
-            }
-            html5QrCodeRef.current.clear() 
-        } catch (e) {
-            console.log("Stop error", e)
-        }
-        setStep('READY')
-    }
   }
 
   const processAttendance = async () => {
@@ -235,12 +265,17 @@ export default function ScanPage() {
                   <Repeat size={24} />
                 </button>
 
-                {/* LABEL MODE KAMERA */}
                 <div className="absolute top-4 left-4 bg-black/50 px-3 py-1 rounded-full text-xs font-mono z-20">
                     {facingMode === 'environment' ? 'Kamera Belakang' : 'Kamera Depan'}
                 </div>
             </div>
-            <button onClick={stopCamera} className="mt-6 text-gray-400 underline text-sm block mx-auto hover:text-white">Batal</button>
+            <button onClick={() => {
+                // Tombol Batal Manual
+                if (html5QrCodeRef.current?.isScanning) {
+                    html5QrCodeRef.current.stop().catch(console.error)
+                }
+                setStep('READY')
+            }} className="mt-6 text-gray-400 underline text-sm block mx-auto hover:text-white">Batal</button>
         </div>
 
         {step === 'RESULT' && (

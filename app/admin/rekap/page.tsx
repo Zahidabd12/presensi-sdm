@@ -4,7 +4,7 @@ import { createClient } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
 import { 
   FileSpreadsheet, Edit, Save, X, Calendar, UserX, CheckCircle, 
-  AlertCircle, Trash2, PlusCircle, RefreshCw, Clock, Briefcase
+  Trash2, PlusCircle, RefreshCw, Clock
 } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { updateAttendanceData, deleteAttendanceData } from '@/app/actions'
@@ -15,12 +15,11 @@ type Attendance = {
   work_category: string | null; task_list: string | null; notes: string | null; weekend_reason: string | null;
 }
 
-// Status lebih lengkap
 type StaffStatus = { 
     email: string; 
     name: string; 
     position?: string;
-    status: 'HADIR' | 'KERJA' | 'ALPHA'; // Kerja = Belum Pulang
+    status: 'HADIR' | 'KERJA' | 'ALPHA'; 
     record?: Attendance | null 
 }
 
@@ -32,8 +31,15 @@ const generateExcel = (data: any[], fileName: string) => {
 export default function RekapPage() {
   const [dailyReport, setDailyReport] = useState<StaffStatus[]>([])
   const [loading, setLoading] = useState(true)
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0])
   
+  // --- FIX TANGGAL (WIB) ---
+  const [selectedDate, setSelectedDate] = useState(() => {
+    const d = new Date()
+    const local = new Date(d.getTime() - (d.getTimezoneOffset() * 60000))
+    return local.toISOString().split('T')[0]
+  })
+  // -------------------------
+
   const [editingRow, setEditingRow] = useState<Attendance | null>(null)
   const [isSaving, setIsSaving] = useState(false)
   const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null)
@@ -50,19 +56,16 @@ export default function RekapPage() {
   const supabase = createClient()
   const router = useRouter()
 
-  // --- FETCH DATA LOGIC BARU ---
   const fetchDailyData = async () => {
     setLoading(true)
     try {
-        // 1. AMBIL MASTER STAFF (Wajib muncul semua)
         const { data: allStaff, error: errStaff } = await supabase
             .from('staff')
             .select('*')
             .order('name', { ascending: true })
         
-        if (errStaff) throw new Error("Gagal ambil data staff. Pastikan tabel 'staff' sudah dibuat.")
+        if (errStaff) throw new Error("Gagal ambil data staff. Pastikan tabel 'staff' ada.")
 
-        // 2. AMBIL PRESENSI HARI INI
         const { data: todayPresence, error: errToday } = await supabase
             .from('attendance')
             .select('*')
@@ -70,22 +73,14 @@ export default function RekapPage() {
 
         if (errToday) throw new Error("Gagal ambil data presensi.")
 
-        // 3. GABUNGKAN DATA (Mapping Status)
         const report: StaffStatus[] = []
         
         allStaff?.forEach((staff) => {
-            // Cari apakah staff ini ada di daftar hadir hari ini?
-            // Kita cocokkan by EMAIL
             const presence = todayPresence?.find(p => p.user_email === staff.email)
-            
             let status: 'HADIR' | 'KERJA' | 'ALPHA' = 'ALPHA'
-            
             if (presence) {
-                if (presence.check_out) {
-                    status = 'HADIR' // Sudah pulang (Lengkap)
-                } else {
-                    status = 'KERJA' // Masih jam kerja / Belum tap pulang
-                }
+                if (presence.check_out) status = 'HADIR'
+                else status = 'KERJA'
             }
 
             report.push({
@@ -97,10 +92,8 @@ export default function RekapPage() {
             })
         })
 
-        // Sort: Kerja -> Hadir -> Alpha
         const priority = { 'KERJA': 1, 'HADIR': 2, 'ALPHA': 3 }
         report.sort((a, b) => priority[a.status] - priority[b.status])
-
         setDailyReport(report)
 
     } catch (e: any) { 
@@ -119,7 +112,7 @@ export default function RekapPage() {
     init()
   }, [selectedDate])
 
-  // --- EXPORT LOGIC ---
+  // --- EXPORT ---
   const handleProcessExport = async () => {
     setIsExporting(true)
     let dataToExport: any[] = []
@@ -167,7 +160,7 @@ export default function RekapPage() {
     setIsExporting(false)
   }
 
-  // Helpers
+  // --- ACTIONS ---
   const handleEditClick = (item: StaffStatus) => {
     if (item.record) setEditingRow(item.record)
     else setEditingRow({
@@ -200,7 +193,6 @@ export default function RekapPage() {
     <div className="space-y-6">
       {toast && <div className={`fixed bottom-6 right-6 z-[60] px-6 py-4 rounded-xl shadow-xl bg-white border-l-8 ${toast.type==='success'?'border-green-500':'border-red-500'}`}>{toast.message}</div>}
 
-      {/* HEADER & CONTROLS */}
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 flex flex-col md:flex-row justify-between items-end gap-4">
         <div>
             <h2 className="text-2xl font-bold text-slate-800">Monitoring Harian</h2>
@@ -216,7 +208,6 @@ export default function RekapPage() {
         </div>
       </div>
 
-      {/* TABEL */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
         <div className="overflow-x-auto">
             <table className="w-full text-sm text-left">
@@ -235,36 +226,17 @@ export default function RekapPage() {
                      dailyReport.length === 0 ? <tr><td colSpan={6} className="p-8 text-center text-slate-400">Tabel Staff Kosong. Harap isi data di Database.</td></tr> :
                      dailyReport.map((item) => (
                         <tr key={item.email} className={`hover:bg-slate-50 transition group ${item.status==='ALPHA'?'bg-red-50/30':''}`}>
-                            
-                            {/* STATUS LOGIC */}
                             <td className="px-6 py-4">
                                 {item.status==='HADIR' && <span className="text-green-600 font-bold flex gap-1 items-center px-2 py-1 bg-green-50 rounded-full w-fit text-xs border border-green-200"><CheckCircle size={14}/> SELESAI</span>}
                                 {item.status==='KERJA' && <span className="text-blue-600 font-bold flex gap-1 items-center px-2 py-1 bg-blue-50 rounded-full w-fit text-xs border border-blue-200"><Clock size={14}/> KERJA</span>}
                                 {item.status==='ALPHA' && <span className="text-red-500 font-bold flex gap-1 items-center px-2 py-1 bg-red-50 rounded-full w-fit text-xs border border-red-200"><UserX size={14}/> ALPHA</span>}
                             </td>
-
-                            <td className="px-6 py-4 font-bold text-slate-700">
-                                {item.name}
-                                <div className="text-xs font-normal text-slate-400">{item.position || item.email}</div>
-                            </td>
-                            
-                            <td className="px-6 py-4 font-mono">
-                                {item.record?.check_in ? new Date(item.record.check_in).toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'}) : '-'}
-                            </td>
-                            
-                            <td className="px-6 py-4 font-mono">
-                                {item.record?.check_out ? new Date(item.record.check_out).toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'}) : 
-                                 item.record?.check_in ? <span className="text-xs italic text-blue-500 animate-pulse">Belum Pulang</span> : '-'}
-                            </td>
-                            
-                            <td className="px-6 py-4 text-xs max-w-[150px] truncate">
-                                {item.record?.weekend_reason ? `Week: ${item.record.weekend_reason}` : (item.record?.notes || '-')}
-                            </td>
-                            
+                            <td className="px-6 py-4 font-bold text-slate-700">{item.name}<div className="text-xs font-normal text-slate-400">{item.position || item.email}</div></td>
+                            <td className="px-6 py-4 font-mono">{item.record?.check_in ? new Date(item.record.check_in).toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'}) : '-'}</td>
+                            <td className="px-6 py-4 font-mono">{item.record?.check_out ? new Date(item.record.check_out).toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'}) : item.record?.check_in ? <span className="text-xs italic text-blue-500 animate-pulse">Belum Pulang</span> : '-'}</td>
+                            <td className="px-6 py-4 text-xs max-w-[150px] truncate">{item.record?.weekend_reason ? `Week: ${item.record.weekend_reason}` : (item.record?.notes || '-')}</td>
                             <td className="px-6 py-4 text-right flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <button onClick={() => handleEditClick(item)} className="p-2 text-blue-600 bg-blue-50 rounded hover:bg-blue-100 transition">
-                                    {item.status==='ALPHA' ? <PlusCircle size={16}/> : <Edit size={16}/>}
-                                </button>
+                                <button onClick={() => handleEditClick(item)} className="p-2 text-blue-600 bg-blue-50 rounded hover:bg-blue-100 transition">{item.status==='ALPHA' ? <PlusCircle size={16}/> : <Edit size={16}/>}</button>
                                 {item.record && <button onClick={() => handleDelete(item.record!.id)} className="p-2 text-red-600 bg-red-50 rounded hover:bg-red-100 transition"><Trash2 size={16}/></button>}
                             </td>
                         </tr>
@@ -274,9 +246,6 @@ export default function RekapPage() {
         </div>
       </div>
 
-      {/* MODAL EXPORT & EDIT SAMA SEPERTI SEBELUMNYA... */}
-      {/* ... (Copy bagian Modal Export & Modal Edit dari kode sebelumnya, tidak ada perubahan logic disitu) ... */}
-      
       {showExportModal && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4">
@@ -320,7 +289,6 @@ export default function RekapPage() {
             </div>
         </div>
       )}
-
     </div>
   )
 }

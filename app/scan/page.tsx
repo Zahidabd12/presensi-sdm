@@ -12,7 +12,7 @@ const OFFICE_LOC = {
   latitude: -7.310985585337482, 
   longitude: 112.72895791145474
 } 
-const MAX_RADIUS = 5000 
+const MAX_RADIUS = 500 
 const SECRET_TOKEN = "ABSENSI-SDM-TOKEN-RAHASIA-2026" 
 
 export default function ScanPage() {

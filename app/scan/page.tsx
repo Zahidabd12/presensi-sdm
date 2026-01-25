@@ -20,7 +20,7 @@ export default function ScanPage() {
   const [status, setStatus] = useState('Mendeteksi lokasi...')
   const [debugMsg, setDebugMsg] = useState('')
   const [isSuccess, setIsSuccess] = useState(false)
-  const [weekendReason, setWeekendReason] = useState('Lembur Project') // Default alasan
+  const [weekendReason, setWeekendReason] = useState('Lembur Project')
   
   const router = useRouter()
   const supabase = createClient()
@@ -33,6 +33,13 @@ export default function ScanPage() {
             router.replace('/admin/dashboard')
             return
         }
+
+        // Cek In-App Browser (IG/TikTok/WA sering blokir kamera)
+        const userAgent = navigator.userAgent || navigator.vendor;
+        if (/Instagram|FBAN|FBAV|WhatsApp/.test(userAgent)) {
+            alert("⚠️ PERINGATAN: Jangan buka di browser Instagram/WA. Kamera mungkin error. Harap buka di Chrome/Safari/Browser bawaan.");
+        }
+
         if (!navigator.geolocation) {
             setDebugMsg('Browser tidak support GPS.')
             return
@@ -56,60 +63,80 @@ export default function ScanPage() {
     init()
   }, [])
 
-  // LOGIC MULAI KAMERA
   const handleStartButton = () => {
-    // Cek apakah hari ini Weekend?
     const day = new Date().getDay()
-    // 0 = Minggu, 6 = Sabtu
     if (day === 0 || day === 6) {
-        setStep('WEEKEND_CHECK') // Tanya alasan dulu
+        setStep('WEEKEND_CHECK') 
     } else {
-        startCamera() // Hari biasa langsung gas
+        startCamera() 
     }
   }
 
+  // --- LOGIC KAMERA YANG DIPERBAIKI ---
   const startCamera = async () => {
     setDebugMsg('')
     setStep('SCANNING')
 
     try {
+      // 1. Pancing Izin Kamera Dulu
       await navigator.mediaDevices.getUserMedia({ video: true })
+
+      // 2. Siapkan Scanner
       const html5QrCode = new Html5Qrcode("reader")
       html5QrCodeRef.current = html5QrCode
 
-      await html5QrCode.start(
-        { facingMode: "environment" },
-        { fps: 10, qrbox: { width: 250, height: 250 } },
-        async (decodedText) => {
-          await html5QrCode.stop()
-          html5QrCode.clear()
-          setStep('RESULT')
-          
-          if (decodedText === SECRET_TOKEN) {
-             processAttendance()
-          } else {
-             setDebugMsg('❌ QR Code Salah!')
-             setIsSuccess(false)
-          }
-        },
-        () => {}
-      )
+      const config = { fps: 10, qrbox: { width: 250, height: 250 } }
+      
+      // 3. Coba Start dengan Kamera Belakang
+      try {
+          await html5QrCode.start({ facingMode: "environment" }, config, onScanSuccess, () => {})
+      } catch (errBack) {
+          console.warn("Gagal kamera environment, mencoba kamera user/default...", errBack)
+          // 4. FALLBACK: Jika kamera belakang error, pakai kamera apapun yang ada
+          await html5QrCode.start({ facingMode: "user" }, config, onScanSuccess, () => {})
+      }
+
     } catch (err: any) {
       setStep('READY')
-      setDebugMsg("❌ Gagal buka kamera: " + err.message)
+      // FIX: Handle error object yang aneh-aneh dari HP
+      let errorText = "Gagal akses kamera."
+      if (typeof err === 'string') errorText = err
+      else if (err?.message) errorText = err.message
+      else if (err?.name) errorText = err.name // Kadang error cuma {name: "NotAllowedError"}
+      else errorText = JSON.stringify(err)
+
+      setDebugMsg(`❌ Error Kamera: ${errorText}. Coba refresh atau buka di Chrome.`)
     }
+  }
+
+  const onScanSuccess = async (decodedText: string) => {
+      await stopCamera()
+      setStep('RESULT')
+      
+      if (decodedText === SECRET_TOKEN) {
+         processAttendance()
+      } else {
+         setDebugMsg('❌ QR Code Salah!')
+         setIsSuccess(false)
+      }
   }
 
   const stopCamera = async () => {
     if (html5QrCodeRef.current) {
-        try { await html5QrCodeRef.current.stop(); html5QrCodeRef.current.clear(); } catch (e) {}
+        try { 
+            if (html5QrCodeRef.current.isScanning) {
+                await html5QrCodeRef.current.stop()
+            }
+            html5QrCodeRef.current.clear() 
+        } catch (e) {
+            console.log("Stop error", e)
+        }
         setStep('READY')
     }
   }
 
   const processAttendance = async () => {
     setStatus('Mengirim data...')
-    // Kirim alasan weekend (jika ada) ke server
     const result = await handleAttendance(step === 'WEEKEND_CHECK' ? weekendReason : undefined)
     setStatus(result.message)
     setIsSuccess(result.success)
@@ -128,7 +155,7 @@ export default function ScanPage() {
         {debugMsg && (
           <div className="bg-red-900/50 border border-red-500 p-4 rounded-xl text-center mb-6 w-full animate-in fade-in">
             <AlertTriangle size={24} className="mx-auto text-red-400 mb-2" />
-            <p className="text-red-200 font-medium text-sm">{debugMsg}</p>
+            <p className="text-red-200 font-medium text-sm break-words">{debugMsg}</p>
           </div>
         )}
 
@@ -152,28 +179,19 @@ export default function ScanPage() {
              </div>
         )}
 
-        {/* PERTANYAAN WEEKEND */}
         {step === 'WEEKEND_CHECK' && (
              <div className="w-full bg-gray-800 p-6 rounded-xl border border-gray-700 animate-in zoom-in">
-                <div className="flex items-center gap-2 text-amber-400 font-bold mb-4 text-lg">
-                    <Calendar size={24}/> Hari Libur Terdeteksi
-                </div>
-                <p className="text-gray-300 text-sm mb-4">Hari ini adalah hari libur (Sabtu/Minggu). Mohon isi alasan kehadiran Anda:</p>
-                
-                <select 
-                    className="w-full p-3 rounded-lg bg-gray-700 border border-gray-600 text-white mb-6 outline-none focus:ring-2 focus:ring-amber-500"
-                    value={weekendReason}
-                    onChange={(e) => setWeekendReason(e.target.value)}
-                >
+                <div className="flex items-center gap-2 text-amber-400 font-bold mb-4 text-lg"><Calendar size={24}/> Hari Libur</div>
+                <p className="text-gray-300 text-sm mb-4">Hari libur terdeteksi. Isi alasan kehadiran:</p>
+                <select className="w-full p-3 rounded-lg bg-gray-700 border border-gray-600 text-white mb-6 outline-none" value={weekendReason} onChange={(e) => setWeekendReason(e.target.value)}>
                     <option value="Lembur Project">🔥 Lembur Project</option>
                     <option value="Event Kampus">🎓 Event Kampus</option>
-                    <option value="Ganti Jam">🔄 Ganti Jam (Hutang)</option>
+                    <option value="Ganti Jam">🔄 Ganti Jam</option>
                     <option value="Lainnya">📝 Lainnya</option>
                 </select>
-
                 <div className="flex gap-3">
                     <button onClick={() => setStep('READY')} className="flex-1 bg-gray-700 py-3 rounded-lg font-bold">Batal</button>
-                    <button onClick={startCamera} className="flex-1 bg-amber-600 hover:bg-amber-700 py-3 rounded-lg font-bold text-white">Lanjut Scan</button>
+                    <button onClick={startCamera} className="flex-1 bg-amber-600 hover:bg-amber-700 py-3 rounded-lg font-bold text-white">Lanjut</button>
                 </div>
              </div>
         )}
@@ -189,15 +207,9 @@ export default function ScanPage() {
         {step === 'RESULT' && (
              <div className={`border p-8 rounded-2xl text-center w-full animate-in zoom-in ${isSuccess ? 'bg-green-500/10 border-green-500' : 'bg-red-500/10 border-red-500'}`}>
                 {isSuccess ? <CheckCircle size={64} className="mx-auto text-green-500 mb-4"/> : <XCircle size={64} className="mx-auto text-red-500 mb-4"/>}
-                <h2 className={`text-2xl font-bold mb-4 ${isSuccess ? 'text-green-400' : 'text-red-400'}`}>
-                    {isSuccess ? 'Berhasil!' : 'Gagal'}
-                </h2>
-                <p className="text-gray-200 mb-8 text-base leading-relaxed whitespace-pre-line border-t border-white/10 pt-4">
-                    {status}
-                </p>
-                <button onClick={() => window.location.reload()} className="w-full bg-gray-700 px-6 py-3 rounded-lg font-bold hover:bg-gray-600 transition">
-                  Tutup
-                </button>
+                <h2 className={`text-2xl font-bold mb-4 ${isSuccess ? 'text-green-400' : 'text-red-400'}`}>{isSuccess ? 'Berhasil!' : 'Gagal'}</h2>
+                <p className="text-gray-200 mb-8 text-base leading-relaxed whitespace-pre-line border-t border-white/10 pt-4">{status}</p>
+                <button onClick={() => window.location.reload()} className="w-full bg-gray-700 px-6 py-3 rounded-lg font-bold hover:bg-gray-600 transition">Tutup</button>
              </div>
         )}
       </div>

@@ -3,8 +3,8 @@ import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
 import { 
-  FileSpreadsheet, Edit, Save, X, Calendar, UserX, CheckCircle, 
-  Trash2, PlusCircle, Search, Clock, Coffee, Stethoscope, User, Filter
+  FileSpreadsheet, Edit, Save, X, UserX, CheckCircle, 
+  Trash2, PlusCircle, Search, Clock, Coffee, Stethoscope, User, Timer
 } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { updateAttendanceData, deleteAttendanceData } from '@/app/actions'
@@ -32,6 +32,21 @@ const generateExcel = (data: any[], fileName: string) => {
     XLSX.writeFile(wb, fileName);
 }
 
+// --- HELPER HITUNG DURASI (JAM KERJA) ---
+const calculateDuration = (inTime: string | null | undefined, outTime: string | null | undefined) => {
+    if (!inTime || !outTime) return '-'
+    const start = new Date(inTime).getTime()
+    const end = new Date(outTime).getTime()
+    const diff = end - start
+    
+    if (diff < 0) return 'Error' // Antisipasi jam terbalik
+    
+    const hours = Math.floor(diff / (1000 * 60 * 60))
+    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60))
+    
+    return `${hours}j ${minutes}m`
+}
+
 // --- HELPER TIMEZONE WIB ---
 const getTodayISO = () => {
     const d = new Date()
@@ -42,13 +57,13 @@ export default function RekapPage() {
   // STATE FILTER UTAMA
   const [startDate, setStartDate] = useState(getTodayISO())
   const [endDate, setEndDate] = useState(getTodayISO())
-  const [selectedStaff, setSelectedStaff] = useState('ALL') // 'ALL' atau Email
+  const [selectedStaff, setSelectedStaff] = useState('ALL') 
   const [staffList, setStaffList] = useState<{email:string, name:string}[]>([])
 
   // STATE DATA
-  const [tableData, setTableData] = useState<StaffStatus[]>([]) // Data untuk tabel
+  const [tableData, setTableData] = useState<StaffStatus[]>([]) 
   const [loading, setLoading] = useState(true)
-  const [mode, setMode] = useState<'DAILY' | 'RANGE'>('DAILY') // Mode Tampilan
+  const [mode, setMode] = useState<'DAILY' | 'RANGE'>('DAILY') 
 
   // STATE MODAL / EDIT
   const [editingRow, setEditingRow] = useState<Attendance | null>(null)
@@ -59,37 +74,33 @@ export default function RekapPage() {
   const supabase = createClient()
   const router = useRouter()
 
-  // 1. INIT LOAD (Ambil List Staff dulu)
+  // 1. INIT LOAD
   useEffect(() => {
     const init = async () => {
         const { data: { user } } = await supabase.auth.getUser()
         if (!user) { router.push('/'); return }
 
-        // Ambil daftar staff untuk dropdown
         const { data } = await supabase.from('staff').select('email, name').order('name')
         if (data) setStaffList(data)
         
-        // Fetch data pertama kali
         fetchData()
     }
     init()
-  }, []) // Run once
+  }, []) 
 
-  // 2. LOGIC FETCH DATA UTAMA
+  // 2. LOGIC FETCH DATA
   const fetchData = async () => {
     setLoading(true)
     try {
-        // Tentukan Mode: Jika tanggal sama -> DAILY (Bisa lihat Alpha), Jika Beda -> RANGE (Log History)
         const isDailyMode = startDate === endDate
         setMode(isDailyMode ? 'DAILY' : 'RANGE')
 
-        // A. QUERY DATA ABSENSI (Sesuai Filter)
         let query = supabase
             .from('attendance')
             .select('*')
             .gte('date', startDate)
             .lte('date', endDate)
-            .order('date', { ascending: false }) // Paling baru diatas
+            .order('date', { ascending: false }) 
             .order('check_in', { ascending: true })
 
         if (selectedStaff !== 'ALL') {
@@ -102,11 +113,10 @@ export default function RekapPage() {
         let finalReport: StaffStatus[] = []
 
         if (isDailyMode) {
-            // --- LOGIC HARIAN (Gabung dengan Master Staff biar ketahuan ALPHA) ---
+            // MODE HARIAN (Gabung Master Staff)
             const { data: allStaff } = await supabase.from('staff').select('*').order('name')
             
             allStaff?.forEach((staff) => {
-                // Jika filter staff aktif, skip staff yang tidak dipilih
                 if (selectedStaff !== 'ALL' && staff.email !== selectedStaff) return
 
                 const record = presenceData?.find(p => p.user_email === staff.email)
@@ -124,13 +134,11 @@ export default function RekapPage() {
                     status: status, record: record || null
                 })
             })
-            // Sort: Kerja > Hadir > Izin > Sakit > Alpha
             const priority = { 'KERJA': 1, 'HADIR': 2, 'IZIN': 3, 'SAKIT': 3, 'ALPHA': 4 }
             finalReport.sort((a, b) => priority[a.status] - priority[b.status])
 
         } else {
-            // --- LOGIC RANGE (Hanya tampilkan data yang ada / Riwayat) ---
-            // Kita mapping data attendance langsung ke format StaffStatus
+            // MODE RANGE (Riwayat)
             finalReport = presenceData?.map(row => {
                 let status: any = 'HADIR'
                 if (row.work_category === 'Izin') status = 'IZIN'
@@ -155,7 +163,7 @@ export default function RekapPage() {
     }
   }
 
-  // 3. LOGIC EXPORT (Download apa yang ada di tabel)
+  // 3. LOGIC EXPORT (Update ada Durasi)
   const handleExport = () => {
     if (tableData.length === 0) {
         showToast("Tidak ada data untuk di-download", 'error')
@@ -168,10 +176,10 @@ export default function RekapPage() {
         Status: item.status === 'KERJA' ? 'Belum Pulang' : item.status,
         'Jam Masuk': (item.status === 'IZIN' || item.status === 'SAKIT') ? '-' : (item.record?.check_in ? new Date(item.record.check_in).toLocaleTimeString('id-ID') : '-'),
         'Jam Pulang': (item.status === 'IZIN' || item.status === 'SAKIT') ? '-' : (item.record?.check_out ? new Date(item.record.check_out).toLocaleTimeString('id-ID') : '-'),
+        'Durasi Kerja': (item.status === 'IZIN' || item.status === 'SAKIT') ? '-' : calculateDuration(item.record?.check_in, item.record?.check_out), // KOLOM BARU
         Keterangan: item.record?.notes || item.record?.weekend_reason || '-'
     }))
 
-    // Nama File Dinamis
     let fileName = `Laporan_${startDate}`
     if (startDate !== endDate) fileName += `_sd_${endDate}`
     if (selectedStaff !== 'ALL') {
@@ -186,7 +194,6 @@ export default function RekapPage() {
 
   // 4. CRUD ACTIONS
   const handleEditClick = (item: StaffStatus) => {
-    // Set Tipe Form
     if (item.status === 'IZIN') setFormType('IZIN')
     else if (item.status === 'SAKIT') setFormType('SAKIT')
     else setFormType('HADIR')
@@ -194,9 +201,8 @@ export default function RekapPage() {
     if (item.record) {
         setEditingRow(item.record)
     } else {
-        // Mode Alpha -> Buat Data Baru
         setEditingRow({
-            id: '', user_email: item.email, user_name: item.name, date: startDate, // Pakai tanggal start
+            id: '', user_email: item.email, user_name: item.name, date: startDate,
             check_in: `${startDate}T08:00`, check_out: null, duration: null,
             work_category: 'Administrasi', task_list: '', notes: '', weekend_reason: null
         })
@@ -209,16 +215,13 @@ export default function RekapPage() {
 
     const dataToSave = { ...editingRow }
     
-    // Logic Izin/Sakit/Hadir
     if (formType === 'IZIN' || formType === 'SAKIT') {
         dataToSave.work_category = formType === 'IZIN' ? 'Izin' : 'Sakit'
-        // Dummy time karena kolom required
         if (!dataToSave.date) dataToSave.date = startDate
         dataToSave.check_in = `${dataToSave.date}T00:00:00`
         dataToSave.check_out = `${dataToSave.date}T00:00:00`
         dataToSave.duration = '0 jam'
     } else {
-        // Reset kategori jika balik ke Hadir
         if (dataToSave.work_category === 'Izin' || dataToSave.work_category === 'Sakit') {
             dataToSave.work_category = 'Administrasi' 
         }
@@ -248,37 +251,28 @@ export default function RekapPage() {
     <div className="space-y-6">
       {toast && <div className={`fixed bottom-6 right-6 z-[60] px-6 py-4 rounded-xl shadow-xl bg-white border-l-8 ${toast.type==='success'?'border-green-500':'border-red-500'}`}>{toast.message}</div>}
 
-      {/* HEADER & FILTER BAR */}
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-4 gap-4">
             <div>
                 <h2 className="text-2xl font-bold text-slate-800">Rekap & Laporan</h2>
                 <p className="text-slate-500 text-sm">Filter data absensi dan download laporan.</p>
             </div>
-            {/* TOMBOL EXPORT (Download Current View) */}
             <button onClick={handleExport} className="flex items-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-bold shadow-sm transition">
                 <FileSpreadsheet size={20}/> Download Excel
             </button>
         </div>
 
-        {/* --- FILTER AREA (LANGSUNG DI HALAMAN) --- */}
         <div className="bg-slate-50 p-4 rounded-lg border border-slate-200 grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
-            
-            {/* Tgl Mulai */}
             <div>
                 <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Dari Tanggal</label>
                 <input type="date" className="w-full p-2 border rounded bg-white font-medium text-slate-700 outline-none focus:ring-2 focus:ring-blue-500" 
                     value={startDate} onChange={(e) => setStartDate(e.target.value)} />
             </div>
-
-            {/* Tgl Akhir */}
             <div>
                 <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Sampai Tanggal</label>
                 <input type="date" className="w-full p-2 border rounded bg-white font-medium text-slate-700 outline-none focus:ring-2 focus:ring-blue-500" 
                     value={endDate} onChange={(e) => setEndDate(e.target.value)} />
             </div>
-
-            {/* Pilih Staff */}
             <div>
                 <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Filter Staff</label>
                 <div className="relative">
@@ -290,19 +284,15 @@ export default function RekapPage() {
                     </select>
                 </div>
             </div>
-
-            {/* Tombol Terapkan */}
             <button onClick={fetchData} className="w-full bg-blue-600 text-white p-2.5 rounded font-bold hover:bg-blue-700 transition flex items-center justify-center gap-2">
                 <Search size={18}/> Tampilkan Data
             </button>
         </div>
       </div>
 
-      {/* TABEL DATA */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
-        {/* Indikator Mode */}
         <div className="px-6 py-3 bg-slate-50 border-b border-slate-100 flex justify-between items-center text-xs font-bold text-slate-500">
-            <span>MODE: {mode === 'DAILY' ? 'HARIAN (Menampilkan Absen & Alpha)' : 'RIWAYAT (Menampilkan Log Kehadiran)'}</span>
+            <span>MODE: {mode === 'DAILY' ? 'HARIAN' : 'RIWAYAT'}</span>
             <span>Total Data: {tableData.length}</span>
         </div>
 
@@ -313,19 +303,19 @@ export default function RekapPage() {
                         <th className="px-6 py-4">Tanggal</th>
                         <th className="px-6 py-4">Status</th>
                         <th className="px-6 py-4">Nama Staff</th>
-                        <th className="px-6 py-4">Jam Masuk</th>
-                        <th className="px-6 py-4">Jam Pulang</th>
+                        <th className="px-6 py-4">Masuk</th>
+                        <th className="px-6 py-4">Pulang</th>
+                        <th className="px-6 py-4">Durasi</th> {/* KOLOM BARU */}
                         <th className="px-6 py-4">Ket</th>
                         <th className="px-6 py-4 text-right">Aksi</th>
                     </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                    {loading ? <tr><td colSpan={7} className="p-8 text-center text-slate-400 animate-pulse">Sedang memuat data...</td></tr> : 
-                     tableData.length === 0 ? <tr><td colSpan={7} className="p-8 text-center text-slate-400">Data tidak ditemukan sesuai filter.</td></tr> :
+                    {loading ? <tr><td colSpan={8} className="p-8 text-center text-slate-400 animate-pulse">Sedang memuat data...</td></tr> : 
+                     tableData.length === 0 ? <tr><td colSpan={8} className="p-8 text-center text-slate-400">Data tidak ditemukan sesuai filter.</td></tr> :
                      tableData.map((item, idx) => (
                         <tr key={idx} className={`hover:bg-slate-50 transition group ${item.status==='ALPHA'?'bg-red-50/30':''}`}>
                             
-                            {/* Tanggal (Baru) */}
                             <td className="px-6 py-4 font-mono text-slate-600">
                                 {item.record ? new Date(item.record.date).toLocaleDateString('id-ID', {day:'2-digit', month:'short'}) : new Date(startDate).toLocaleDateString('id-ID', {day:'2-digit', month:'short'})}
                             </td>
@@ -347,6 +337,11 @@ export default function RekapPage() {
                                 {(item.status === 'IZIN' || item.status === 'SAKIT') ? '-' : (item.record?.check_out ? new Date(item.record.check_out).toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'}) : item.record?.check_in ? <span className="text-xs italic text-blue-500 animate-pulse">Belum Pulang</span> : '-')}
                             </td>
 
+                            {/* KOLOM DURASI (BARU) */}
+                            <td className="px-6 py-4 font-mono font-bold text-slate-600">
+                                {(item.status === 'IZIN' || item.status === 'SAKIT') ? '-' : calculateDuration(item.record?.check_in, item.record?.check_out)}
+                            </td>
+
                             <td className="px-6 py-4 text-xs max-w-[150px] truncate">{item.record?.weekend_reason ? `Week: ${item.record.weekend_reason}` : (item.record?.notes || '-')}</td>
 
                             <td className="px-6 py-4 text-right flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -362,13 +357,12 @@ export default function RekapPage() {
         </div>
       </div>
 
-      {/* MODAL EDIT / INPUT (Sama seperti sebelumnya) */}
+      {/* MODAL EDIT SAMA SEPERTI SEBELUMNYA */}
       {editingRow && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4 animate-in fade-in zoom-in">
                 <div className="flex justify-between items-center"><h3 className="text-lg font-bold">Update Status Staff</h3><button onClick={()=>setEditingRow(null)}><X/></button></div>
                 
-                {/* TABS */}
                 <div className="grid grid-cols-3 gap-2 bg-slate-100 p-1 rounded-lg">
                     <button onClick={() => setFormType('HADIR')} className={`p-2 rounded text-xs font-bold transition ${formType==='HADIR'?'bg-white shadow text-blue-600':'text-slate-500'}`}>Hadir Kerja</button>
                     <button onClick={() => setFormType('IZIN')} className={`p-2 rounded text-xs font-bold transition ${formType==='IZIN'?'bg-white shadow text-amber-600':'text-slate-500'}`}>Izin</button>
@@ -380,25 +374,19 @@ export default function RekapPage() {
                         <span>Staff: <strong>{editingRow.user_name}</strong></span>
                         <span>Tgl: {new Date(editingRow.date).toLocaleDateString('id-ID')}</span>
                     </div>
-
                     {formType === 'HADIR' && (
                         <div className="grid grid-cols-2 gap-3">
                             <div><label className="text-xs font-bold text-slate-500">Masuk</label><input type="datetime-local" className="w-full border p-2 rounded" value={toLocalISO(editingRow.check_in)} onChange={e=>setEditingRow({...editingRow, check_in: new Date(e.target.value).toISOString()})}/></div>
                             <div><label className="text-xs font-bold text-slate-500">Pulang</label><input type="datetime-local" className="w-full border p-2 rounded" value={toLocalISO(editingRow.check_out)} onChange={e=>setEditingRow({...editingRow, check_out: new Date(e.target.value).toISOString()})}/></div>
                         </div>
                     )}
-
                     {(formType === 'IZIN' || formType === 'SAKIT') && (
-                        <div className="bg-amber-50 border border-amber-200 p-3 rounded text-amber-800 text-xs">
-                            Jam akan diabaikan. Staff tercatat sebagai <strong>{formType}</strong>.
-                        </div>
+                        <div className="bg-amber-50 border border-amber-200 p-3 rounded text-amber-800 text-xs">Jam akan diabaikan. Staff tercatat sebagai <strong>{formType}</strong>.</div>
                     )}
-
                     <div>
                         <label className="text-xs font-bold text-slate-500 mb-1 block">Keterangan</label>
                         <textarea required={formType!=='HADIR'} className="w-full border p-2 rounded h-24 focus:ring-2 focus:ring-blue-500 outline-none" placeholder={formType==='HADIR' ? "Catatan kerja..." : "Tulis alasan izin/sakit..."} value={editingRow.notes||''} onChange={e=>setEditingRow({...editingRow, notes: e.target.value})}/>
                     </div>
-
                     <button disabled={isSaving} className="w-full bg-blue-600 text-white py-3 rounded font-bold hover:bg-blue-700 shadow-lg shadow-blue-600/20 transition">{isSaving?'Menyimpan...':'Simpan Perubahan'}</button>
                 </form>
             </div>

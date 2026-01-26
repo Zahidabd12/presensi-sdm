@@ -5,7 +5,7 @@ import { handleAttendance } from '@/app/actions'
 import { getDistance } from 'geolib'
 import { 
   LogOut, Camera, XCircle, CheckCircle, RefreshCw, 
-  AlertTriangle, Calendar, Repeat, MapPin, Clock, ArrowRightCircle, ArrowLeftCircle 
+  AlertTriangle, Calendar, Repeat, MapPin, ArrowRightCircle, ArrowLeftCircle 
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
@@ -15,7 +15,7 @@ const OFFICE_LOC = {
   latitude: -7.310985585337482, 
   longitude: 112.72895791145474
 } 
-const MAX_RADIUS = 500
+const MAX_RADIUS = 5000 
 const SECRET_TOKEN = "ABSENSI-SDM-TOKEN-RAHASIA-2026" 
 
 export default function ScanPage() {
@@ -25,24 +25,19 @@ export default function ScanPage() {
   const [isSuccess, setIsSuccess] = useState(false)
   const [weekendReason, setWeekendReason] = useState('Lembur Project')
   
-  // State Kamera & Waktu
   const [facingMode, setFacingMode] = useState<"environment" | "user">("environment")
   const [time, setTime] = useState(new Date())
-
-  // State Status Absensi Hari Ini
   const [todayRecord, setTodayRecord] = useState<{ check_in: string | null, check_out: string | null } | null>(null)
 
   const router = useRouter()
   const supabase = createClient()
   const html5QrCodeRef = useRef<Html5Qrcode | null>(null)
 
-  // --- JAM REALTIME ---
   useEffect(() => {
     const timer = setInterval(() => setTime(new Date()), 1000)
     return () => clearInterval(timer)
   }, [])
 
-  // --- CLEANUP KAMERA ---
   useEffect(() => {
     return () => {
         if (html5QrCodeRef.current?.isScanning) {
@@ -52,7 +47,6 @@ export default function ScanPage() {
     }
   }, [])
 
-  // --- INIT DATA & GPS ---
   useEffect(() => {
     const init = async () => {
         const { data: { user } } = await supabase.auth.getUser()
@@ -61,7 +55,6 @@ export default function ScanPage() {
             return
         }
 
-        // 1. AMBIL STATUS ABSEN HARI INI
         if (user) {
             const d = new Date()
             const localDate = new Date(d.getTime() - (d.getTimezoneOffset() * 60000)).toISOString().split('T')[0]
@@ -76,13 +69,11 @@ export default function ScanPage() {
             if (data) setTodayRecord(data)
         }
 
-        // 2. CEK BROWSER
         const userAgent = navigator.userAgent || navigator.vendor;
         if (/Instagram|FBAN|FBAV|WhatsApp/.test(userAgent)) {
             alert("⚠️ PERINGATAN: Jangan buka di browser Instagram/WA. Harap buka di Chrome/Safari.");
         }
 
-        // 3. CEK GPS
         if (!navigator.geolocation) {
             setDebugMsg('Browser tidak support GPS.')
             return
@@ -183,12 +174,12 @@ export default function ScanPage() {
     setIsSuccess(result.success)
   }
 
-  const formatTimeInfo = (isoString: string | null) => {
+  // --- PERBAIKAN DI SINI (Menambahkan | undefined) ---
+  const formatTimeInfo = (isoString: string | null | undefined) => {
       if (!isoString) return '--:--'
       return new Date(isoString).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
   }
 
-  // UI FORMAT
   const dateString = time.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
   const timeString = time.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 
@@ -207,7 +198,6 @@ export default function ScanPage() {
 
       <main className="flex-1 flex flex-col items-center justify-center p-4 w-full max-w-md mx-auto space-y-6">
 
-        {/* JAM DIGITAL */}
         <div className="w-full text-center space-y-1 pt-4">
             <div className="text-blue-400 text-sm font-medium uppercase tracking-widest flex items-center justify-center gap-2">
                 <Calendar size={14}/> {dateString}
@@ -217,7 +207,6 @@ export default function ScanPage() {
             </div>
         </div>
 
-        {/* WIDGET STATUS HARI INI (BARU!) */}
         <div className="grid grid-cols-2 gap-3 w-full animate-in slide-in-from-bottom-2">
             {/* Kartu Masuk */}
             <div className={`p-4 rounded-2xl border flex flex-col items-center justify-center relative overflow-hidden ${todayRecord?.check_in ? 'bg-blue-900/20 border-blue-500/50' : 'bg-slate-800/50 border-slate-700'}`}>
@@ -242,7 +231,6 @@ export default function ScanPage() {
             </div>
         </div>
 
-        {/* ERROR MSG */}
         {debugMsg && (
           <div className="bg-red-500/10 border border-red-500/50 p-4 rounded-xl text-center w-full animate-in fade-in">
             <AlertTriangle size={24} className="mx-auto text-red-400 mb-2" />
@@ -250,7 +238,6 @@ export default function ScanPage() {
           </div>
         )}
 
-        {/* LOADING GPS */}
         {step === 'GPS' && !debugMsg && (
             <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 w-full text-center space-y-4 animate-pulse">
                 <RefreshCw size={32} className="animate-spin text-blue-500 mx-auto" />
@@ -258,7 +245,6 @@ export default function ScanPage() {
             </div>
         )}
 
-        {/* READY TO SCAN */}
         {step === 'READY' && (
              <div className="w-full space-y-4 animate-in slide-in-from-bottom-5">
                 <div className="flex items-center justify-center gap-2 text-slate-400 text-xs bg-slate-800/50 py-1 px-3 rounded-full w-fit mx-auto">
@@ -271,7 +257,6 @@ export default function ScanPage() {
              </div>
         )}
 
-        {/* SCANNING UI */}
         <div className={`w-full ${step === 'SCANNING' ? 'block' : 'hidden'} animate-in fade-in`}>
             <div className="relative rounded-3xl overflow-hidden border-4 border-slate-800 shadow-2xl bg-black">
                 <div id="reader" className="w-full h-[350px] bg-black object-cover"></div>
@@ -296,7 +281,6 @@ export default function ScanPage() {
             </button>
         </div>
 
-        {/* WEEKEND CHECK UI */}
         {step === 'WEEKEND_CHECK' && (
              <div className="w-full bg-slate-800 p-6 rounded-2xl border border-slate-700 shadow-xl animate-in zoom-in">
                 <div className="flex items-center gap-2 text-amber-400 font-bold mb-4 text-lg border-b border-slate-700 pb-4">
@@ -317,7 +301,6 @@ export default function ScanPage() {
              </div>
         )}
 
-        {/* RESULT UI */}
         {step === 'RESULT' && (
              <div className={`w-full p-8 rounded-3xl text-center border shadow-2xl animate-in zoom-in ${isSuccess ? 'bg-green-500/10 border-green-500/50' : 'bg-red-500/10 border-red-500/50'}`}>
                 <div className={`w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6 ${isSuccess ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>

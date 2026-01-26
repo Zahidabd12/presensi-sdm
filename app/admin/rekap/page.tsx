@@ -4,7 +4,7 @@ import { createClient } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
 import { 
   FileSpreadsheet, Edit, Save, X, Calendar, UserX, CheckCircle, 
-  Trash2, PlusCircle, RefreshCw, Clock, Coffee, Stethoscope
+  Trash2, PlusCircle, RefreshCw, Clock, Coffee, Stethoscope, User
 } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { updateAttendanceData, deleteAttendanceData } from '@/app/actions'
@@ -15,7 +15,6 @@ type Attendance = {
   work_category: string | null; task_list: string | null; notes: string | null; weekend_reason: string | null;
 }
 
-// Update Status Type
 type StaffStatus = { 
     email: string; 
     name: string; 
@@ -42,8 +41,6 @@ export default function RekapPage() {
 
   // State Modal Edit/Input
   const [editingRow, setEditingRow] = useState<Attendance | null>(null)
-  
-  // State Khusus Form (Untuk membedakan Tipe Kehadiran di Modal)
   const [formType, setFormType] = useState<'HADIR' | 'IZIN' | 'SAKIT'>('HADIR')
   
   const [isSaving, setIsSaving] = useState(false)
@@ -56,6 +53,10 @@ export default function RekapPage() {
   const [exportYear, setExportYear] = useState(new Date().getFullYear())
   const [exportStartDate, setExportStartDate] = useState(new Date().toISOString().split('T')[0])
   const [exportEndDate, setExportEndDate] = useState(new Date().toISOString().split('T')[0])
+  
+  // --- STATE BARU: TARGET STAFF ---
+  const [exportTarget, setExportTarget] = useState<string>('ALL') // 'ALL' atau Email Staff
+  
   const [isExporting, setIsExporting] = useState(false)
 
   const supabase = createClient()
@@ -65,7 +66,6 @@ export default function RekapPage() {
   const fetchDailyData = async () => {
     setLoading(true)
     try {
-        // 1. Ambil Master Staff
         const { data: allStaff, error: errStaff } = await supabase
             .from('staff')
             .select('*')
@@ -73,7 +73,6 @@ export default function RekapPage() {
         
         if (errStaff) throw new Error("Gagal ambil data staff.")
 
-        // 2. Ambil Presensi Hari Ini
         const { data: todayPresence, error: errToday } = await supabase
             .from('attendance')
             .select('*')
@@ -81,7 +80,6 @@ export default function RekapPage() {
 
         if (errToday) throw new Error("Gagal ambil data presensi.")
 
-        // 3. Mapping Status
         const report: StaffStatus[] = []
         
         allStaff?.forEach((staff) => {
@@ -89,16 +87,10 @@ export default function RekapPage() {
             let status: 'HADIR' | 'KERJA' | 'ALPHA' | 'IZIN' | 'SAKIT' = 'ALPHA'
             
             if (presence) {
-                // Cek kategori kerja untuk menentukan Izin/Sakit
-                if (presence.work_category === 'Izin') {
-                    status = 'IZIN'
-                } else if (presence.work_category === 'Sakit') {
-                    status = 'SAKIT'
-                } else if (presence.check_out) {
-                    status = 'HADIR'
-                } else {
-                    status = 'KERJA'
-                }
+                if (presence.work_category === 'Izin') status = 'IZIN'
+                else if (presence.work_category === 'Sakit') status = 'SAKIT'
+                else if (presence.check_out) status = 'HADIR'
+                else status = 'KERJA'
             }
 
             report.push({
@@ -110,7 +102,6 @@ export default function RekapPage() {
             })
         })
 
-        // Sort Priority: Kerja > Hadir > Izin > Sakit > Alpha
         const priority = { 'KERJA': 1, 'HADIR': 2, 'IZIN': 3, 'SAKIT': 3, 'ALPHA': 4 }
         report.sort((a, b) => priority[a.status] - priority[b.status])
         setDailyReport(report)
@@ -131,14 +122,29 @@ export default function RekapPage() {
     init()
   }, [selectedDate])
 
-  // --- EXPORT LOGIC ---
+  // --- EXPORT LOGIC (DIPERBAIKI) ---
   const handleProcessExport = async () => {
     setIsExporting(true)
     let dataToExport: any[] = []
     let fileName = "Laporan.xlsx"
+    
+    // Cari nama staff untuk filename (jika tidak ALL)
+    let staffNameLabel = ""
+    if (exportTarget !== 'ALL') {
+        const s = dailyReport.find(x => x.email === exportTarget)
+        staffNameLabel = s ? `_${s.name.replace(/\s+/g, '_')}` : '_Staff'
+    }
+
     try {
+        // --- 1. EXPORT HARIAN ---
         if (exportType === 'DAILY') {
-            dataToExport = dailyReport.map(item => ({
+            // Filter Data Lokal
+            let filteredData = dailyReport
+            if (exportTarget !== 'ALL') {
+                filteredData = dailyReport.filter(item => item.email === exportTarget)
+            }
+
+            dataToExport = filteredData.map(item => ({
                 Tanggal: selectedDate, 
                 Nama: item.name, 
                 Status: item.status === 'KERJA' ? 'Belum Pulang' : item.status,
@@ -146,9 +152,10 @@ export default function RekapPage() {
                 'Jam Pulang': (item.status === 'IZIN' || item.status === 'SAKIT') ? '-' : (item.record?.check_out ? new Date(item.record.check_out).toLocaleTimeString('id-ID') : '-'),
                 Keterangan: item.record?.notes || item.record?.weekend_reason || '-'
             }))
-            fileName = `Harian_${selectedDate}.xlsx`
+            fileName = `Harian_${selectedDate}${staffNameLabel}.xlsx`
+        
         } else {
-            // Logic Export Range (Sama seperti sebelumnya)
+            // --- 2. EXPORT RANGE (BULANAN/TAHUNAN) ---
             let start = '', end = ''
             if (exportType === 'MONTHLY') {
                 const startDateObj = new Date(exportYear, exportMonth - 1, 16) 
@@ -157,13 +164,21 @@ export default function RekapPage() {
                     const y = d.getFullYear(); const m = String(d.getMonth()+1).padStart(2,'0'); const date = String(d.getDate()).padStart(2,'0');
                     return `${y}-${m}-${date}`
                 }
-                start = toStr(startDateObj); end = toStr(endDateObj); fileName = `Bulanan_${exportMonth+1}_${exportYear}.xlsx`
+                start = toStr(startDateObj); end = toStr(endDateObj); fileName = `Bulanan_${exportMonth+1}_${exportYear}${staffNameLabel}.xlsx`
             } 
-            else if (exportType === 'YEARLY') { start = `${exportYear}-01-01`; end = `${exportYear}-12-31`; fileName = `Tahunan_${exportYear}.xlsx` }
-            else { start = exportStartDate; end = exportEndDate; fileName = `Custom_${start}_${end}.xlsx` }
+            else if (exportType === 'YEARLY') { start = `${exportYear}-01-01`; end = `${exportYear}-12-31`; fileName = `Tahunan_${exportYear}${staffNameLabel}.xlsx` }
+            else { start = exportStartDate; end = exportEndDate; fileName = `Custom_${start}_${end}${staffNameLabel}.xlsx` }
 
-            const { data: rangeData } = await supabase.from('attendance').select('*').gte('date', start).lte('date', end).order('date')
-            if (!rangeData || rangeData.length === 0) throw new Error("Tidak ada data.")
+            // QUERY DATABASE DENGAN FILTER
+            let query = supabase.from('attendance').select('*').gte('date', start).lte('date', end).order('date')
+            
+            // FILTER STAFF DI QUERY
+            if (exportTarget !== 'ALL') {
+                query = query.eq('user_email', exportTarget)
+            }
+
+            const { data: rangeData } = await query
+            if (!rangeData || rangeData.length === 0) throw new Error("Tidak ada data untuk kriteria ini.")
 
             dataToExport = rangeData.map(row => ({
                 Tanggal: row.date, Nama: row.user_name, 
@@ -182,7 +197,6 @@ export default function RekapPage() {
 
   // --- ACTIONS ---
   const handleEditClick = (item: StaffStatus) => {
-    // Tentukan Tipe Form Awal
     if (item.status === 'IZIN') setFormType('IZIN')
     else if (item.status === 'SAKIT') setFormType('SAKIT')
     else setFormType('HADIR')
@@ -190,7 +204,6 @@ export default function RekapPage() {
     if (item.record) {
         setEditingRow(item.record)
     } else {
-        // Data Baru (Default)
         setEditingRow({
             id: '', user_email: item.email, user_name: item.name, date: selectedDate,
             check_in: `${selectedDate}T08:00`, check_out: null, duration: null,
@@ -204,18 +217,13 @@ export default function RekapPage() {
     if(!editingRow) return
     setIsSaving(true)
 
-    // LOGIC MODIFIKASI DATA SEBELUM DISIMPAN
     const dataToSave = { ...editingRow }
-
     if (formType === 'IZIN' || formType === 'SAKIT') {
-        // Jika Izin/Sakit, kita kunci kategorinya
         dataToSave.work_category = formType === 'IZIN' ? 'Izin' : 'Sakit'
-        // Isi jam dengan dummy agar database tidak error (karena kolom check_in required)
         dataToSave.check_in = `${selectedDate}T00:00:00`
         dataToSave.check_out = `${selectedDate}T00:00:00`
         dataToSave.duration = '0 jam'
     } else {
-        // Jika Hadir, kembalikan kategori ke default jika sebelumnya Izin/Sakit
         if (dataToSave.work_category === 'Izin' || dataToSave.work_category === 'Sakit') {
             dataToSave.work_category = 'Administrasi' 
         }
@@ -228,7 +236,7 @@ export default function RekapPage() {
   }
 
   const handleDelete = async (id: string) => {
-    if(!confirm("Hapus data ini? Status akan kembali menjadi ALPHA.")) return
+    if(!confirm("Hapus data ini?")) return
     setIsSaving(true)
     const res = await deleteAttendanceData(id)
     if(res.success) { await fetchDailyData(); showToast('Terhapus', 'success') }
@@ -278,8 +286,6 @@ export default function RekapPage() {
                      dailyReport.length === 0 ? <tr><td colSpan={6} className="p-8 text-center text-slate-400">Tabel Kosong.</td></tr> :
                      dailyReport.map((item) => (
                         <tr key={item.email} className={`hover:bg-slate-50 transition group ${item.status==='ALPHA'?'bg-red-50/30':''}`}>
-                            
-                            {/* BADGE STATUS */}
                             <td className="px-6 py-4">
                                 {item.status==='HADIR' && <span className="text-green-600 font-bold flex gap-1 items-center px-2 py-1 bg-green-50 rounded-full w-fit text-xs border border-green-200"><CheckCircle size={14}/> SELESAI</span>}
                                 {item.status==='KERJA' && <span className="text-blue-600 font-bold flex gap-1 items-center px-2 py-1 bg-blue-50 rounded-full w-fit text-xs border border-blue-200"><Clock size={14}/> KERJA</span>}
@@ -287,24 +293,16 @@ export default function RekapPage() {
                                 {item.status==='IZIN' && <span className="text-amber-600 font-bold flex gap-1 items-center px-2 py-1 bg-amber-50 rounded-full w-fit text-xs border border-amber-200"><Coffee size={14}/> IZIN</span>}
                                 {item.status==='SAKIT' && <span className="text-purple-600 font-bold flex gap-1 items-center px-2 py-1 bg-purple-50 rounded-full w-fit text-xs border border-purple-200"><Stethoscope size={14}/> SAKIT</span>}
                             </td>
-
                             <td className="px-6 py-4 font-bold text-slate-700">{item.name}<div className="text-xs font-normal text-slate-400">{item.position || item.email}</div></td>
-                            
-                            {/* JAM (Hilangkan jika Izin/Sakit) */}
                             <td className="px-6 py-4 font-mono">
                                 {(item.status === 'IZIN' || item.status === 'SAKIT') ? '-' : (item.record?.check_in ? new Date(item.record.check_in).toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'}) : '-')}
                             </td>
-                            
                             <td className="px-6 py-4 font-mono">
                                 {(item.status === 'IZIN' || item.status === 'SAKIT') ? '-' : (item.record?.check_out ? new Date(item.record.check_out).toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'}) : item.record?.check_in ? <span className="text-xs italic text-blue-500 animate-pulse">Belum Pulang</span> : '-')}
                             </td>
-                            
                             <td className="px-6 py-4 text-xs max-w-[150px] truncate">{item.record?.weekend_reason ? `Week: ${item.record.weekend_reason}` : (item.record?.notes || '-')}</td>
-                            
                             <td className="px-6 py-4 text-right flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <button onClick={() => handleEditClick(item)} className="p-2 text-blue-600 bg-blue-50 rounded hover:bg-blue-100 transition">
-                                    {item.status==='ALPHA' ? <PlusCircle size={16}/> : <Edit size={16}/>}
-                                </button>
+                                <button onClick={() => handleEditClick(item)} className="p-2 text-blue-600 bg-blue-50 rounded hover:bg-blue-100 transition">{item.status==='ALPHA' ? <PlusCircle size={16}/> : <Edit size={16}/>}</button>
                                 {item.record && <button onClick={() => handleDelete(item.record!.id)} className="p-2 text-red-600 bg-red-50 rounded hover:bg-red-100 transition"><Trash2 size={16}/></button>}
                             </td>
                         </tr>
@@ -314,17 +312,36 @@ export default function RekapPage() {
         </div>
       </div>
 
-      {/* MODAL EXPORT (Sama seperti sebelumnya) */}
+      {/* MODAL EXPORT TERBARU */}
       {showExportModal && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4">
                 <div className="flex justify-between items-center"><h3 className="text-lg font-bold">Export Data</h3><button onClick={()=>setShowExportModal(false)}><X/></button></div>
+                
+                {/* 1. FILTER TIPE WAKTU */}
                 <div className="grid grid-cols-2 gap-2">
                     {['DAILY','MONTHLY','YEARLY','CUSTOM'].map((t) => (
                         <button key={t} onClick={() => setExportType(t as any)} className={`p-2 border rounded text-xs font-bold ${exportType===t?'bg-emerald-600 text-white':'hover:bg-slate-50'}`}>{t}</button>
                     ))}
                 </div>
-                <div className="bg-slate-50 p-4 rounded border">
+
+                <div className="bg-slate-50 p-4 rounded border space-y-4">
+                    
+                    {/* 2. FILTER STAFF (BARU!) */}
+                    <div>
+                        <label className="text-xs font-bold text-slate-500 uppercase mb-1 flex items-center gap-1"><User size={12}/> Pilih Staff</label>
+                        <select className="w-full border p-2 rounded text-sm bg-white" value={exportTarget} onChange={(e) => setExportTarget(e.target.value)}>
+                            <option value="ALL">Semua Staff</option>
+                            {/* Loop nama staff dari tabel */}
+                            {dailyReport.map(s => (
+                                <option key={s.email} value={s.email}>{s.name}</option>
+                            ))}
+                        </select>
+                    </div>
+
+                    <hr className="border-slate-200"/>
+
+                    {/* 3. FILTER TANGGAL (Sesuai Tipe) */}
                     {exportType === 'MONTHLY' && (
                         <>
                         <p className="text-xs text-slate-500 mb-2 font-bold">PERIODE (Cutoff 15)</p>
@@ -337,18 +354,18 @@ export default function RekapPage() {
                     {exportType === 'DAILY' && <p className="text-sm">Data Tanggal: <strong>{selectedDate}</strong></p>}
                     {exportType === 'CUSTOM' && <div className="flex gap-2"><input type="date" className="border p-1 w-full" value={exportStartDate} onChange={e=>setExportStartDate(e.target.value)}/><input type="date" className="border p-1 w-full" value={exportEndDate} onChange={e=>setExportEndDate(e.target.value)}/></div>}
                 </div>
+                
                 <button onClick={handleProcessExport} disabled={isExporting} className="w-full bg-emerald-600 text-white py-3 rounded font-bold hover:bg-emerald-700">{isExporting?'Processing...':'Download .xlsx'}</button>
             </div>
         </div>
       )}
 
-      {/* MODAL INPUT MANUAL / EDIT */}
+      {/* MODAL EDIT (Sama seperti sebelumnya) */}
       {editingRow && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4">
                 <div className="flex justify-between items-center"><h3 className="text-lg font-bold">Input Status Kehadiran</h3><button onClick={()=>setEditingRow(null)}><X/></button></div>
                 
-                {/* PILIHAN TIPE KEHADIRAN */}
                 <div className="grid grid-cols-3 gap-2 bg-slate-100 p-1 rounded-lg">
                     <button onClick={() => setFormType('HADIR')} className={`p-2 rounded text-xs font-bold transition ${formType==='HADIR'?'bg-white shadow text-blue-600':'text-slate-500'}`}>Hadir Kerja</button>
                     <button onClick={() => setFormType('IZIN')} className={`p-2 rounded text-xs font-bold transition ${formType==='IZIN'?'bg-white shadow text-amber-600':'text-slate-500'}`}>Izin</button>
@@ -358,7 +375,6 @@ export default function RekapPage() {
                 <form onSubmit={handleSave} className="space-y-4">
                     <div className="bg-blue-50 p-2 text-xs rounded text-blue-800">Staff: <strong>{editingRow.user_name}</strong></div>
 
-                    {/* FORM JIKA HADIR */}
                     {formType === 'HADIR' && (
                         <div className="grid grid-cols-2 gap-2 animate-in fade-in">
                             <div><label className="text-xs font-bold">Masuk</label><input type="datetime-local" className="w-full border p-2 rounded" value={toLocalISO(editingRow.check_in)} onChange={e=>setEditingRow({...editingRow, check_in: new Date(e.target.value).toISOString()})}/></div>
@@ -366,7 +382,6 @@ export default function RekapPage() {
                         </div>
                     )}
 
-                    {/* FORM JIKA IZIN/SAKIT */}
                     {(formType === 'IZIN' || formType === 'SAKIT') && (
                         <div className="bg-amber-50 border border-amber-200 p-3 rounded text-amber-800 text-xs animate-in fade-in">
                             Jam masuk & pulang akan diabaikan. Staff tercatat sebagai <strong>{formType}</strong>.

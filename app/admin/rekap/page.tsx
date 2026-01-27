@@ -32,40 +32,32 @@ const generateExcel = (data: any[], fileName: string) => {
     XLSX.writeFile(wb, fileName);
 }
 
-// --- HELPER HITUNG DURASI (JAM KERJA) ---
 const calculateDuration = (inTime: string | null | undefined, outTime: string | null | undefined) => {
     if (!inTime || !outTime) return '-'
     const start = new Date(inTime).getTime()
     const end = new Date(outTime).getTime()
     const diff = end - start
-    
-    if (diff < 0) return 'Error' // Antisipasi jam terbalik
-    
+    if (diff < 0) return 'Error' 
     const hours = Math.floor(diff / (1000 * 60 * 60))
     const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60))
-    
     return `${hours}j ${minutes}m`
 }
 
-// --- HELPER TIMEZONE WIB ---
 const getTodayISO = () => {
     const d = new Date()
     return new Date(d.getTime() - (d.getTimezoneOffset() * 60000)).toISOString().split('T')[0]
 }
 
 export default function RekapPage() {
-  // STATE FILTER UTAMA
   const [startDate, setStartDate] = useState(getTodayISO())
   const [endDate, setEndDate] = useState(getTodayISO())
   const [selectedStaff, setSelectedStaff] = useState('ALL') 
   const [staffList, setStaffList] = useState<{email:string, name:string}[]>([])
 
-  // STATE DATA
   const [tableData, setTableData] = useState<StaffStatus[]>([]) 
   const [loading, setLoading] = useState(true)
   const [mode, setMode] = useState<'DAILY' | 'RANGE'>('DAILY') 
 
-  // STATE MODAL / EDIT
   const [editingRow, setEditingRow] = useState<Attendance | null>(null)
   const [formType, setFormType] = useState<'HADIR' | 'IZIN' | 'SAKIT'>('HADIR')
   const [isSaving, setIsSaving] = useState(false)
@@ -74,7 +66,6 @@ export default function RekapPage() {
   const supabase = createClient()
   const router = useRouter()
 
-  // 1. INIT LOAD
   useEffect(() => {
     const init = async () => {
         const { data: { user } } = await supabase.auth.getUser()
@@ -88,13 +79,13 @@ export default function RekapPage() {
     init()
   }, []) 
 
-  // 2. LOGIC FETCH DATA
   const fetchData = async () => {
     setLoading(true)
     try {
         const isDailyMode = startDate === endDate
         setMode(isDailyMode ? 'DAILY' : 'RANGE')
 
+        // 1. QUERY ATTENDANCE
         let query = supabase
             .from('attendance')
             .select('*')
@@ -110,12 +101,13 @@ export default function RekapPage() {
         const { data: presenceData, error } = await query
         if (error) throw error
 
+        // 2. QUERY MASTER STAFF (Wajib diambil di kedua mode untuk sinkronisasi nama)
+        const { data: allStaff } = await supabase.from('staff').select('*').order('name')
+
         let finalReport: StaffStatus[] = []
 
         if (isDailyMode) {
-            // MODE HARIAN (Gabung Master Staff)
-            const { data: allStaff } = await supabase.from('staff').select('*').order('name')
-            
+            // --- MODE HARIAN ---
             allStaff?.forEach((staff) => {
                 if (selectedStaff !== 'ALL' && staff.email !== selectedStaff) return
 
@@ -130,24 +122,31 @@ export default function RekapPage() {
                 }
 
                 finalReport.push({
-                    email: staff.email, name: staff.name, position: staff.position,
-                    status: status, record: record || null
+                    email: staff.email, 
+                    name: staff.name, // Selalu pakai nama Master Terbaru
+                    position: staff.position,
+                    status: status, 
+                    record: record || null
                 })
             })
             const priority = { 'KERJA': 1, 'HADIR': 2, 'IZIN': 3, 'SAKIT': 3, 'ALPHA': 4 }
             finalReport.sort((a, b) => priority[a.status] - priority[b.status])
 
         } else {
-            // MODE RANGE (Riwayat)
+            // --- MODE RIWAYAT (RANGE) ---
             finalReport = presenceData?.map(row => {
                 let status: any = 'HADIR'
                 if (row.work_category === 'Izin') status = 'IZIN'
                 else if (row.work_category === 'Sakit') status = 'SAKIT'
                 else if (!row.check_out) status = 'KERJA'
 
+                // UPDATE: Cari nama terbaru dari Master Staff berdasarkan Email
+                const currentStaffData = allStaff?.find(s => s.email === row.user_email)
+                const realName = currentStaffData ? currentStaffData.name : (row.user_name || row.user_email)
+
                 return {
                     email: row.user_email,
-                    name: row.user_name || row.user_email,
+                    name: realName, // Nama Sinkron
                     status: status,
                     record: row
                 }
@@ -163,7 +162,6 @@ export default function RekapPage() {
     }
   }
 
-  // 3. LOGIC EXPORT (Update ada Durasi)
   const handleExport = () => {
     if (tableData.length === 0) {
         showToast("Tidak ada data untuk di-download", 'error')
@@ -176,7 +174,7 @@ export default function RekapPage() {
         Status: item.status === 'KERJA' ? 'Belum Pulang' : item.status,
         'Jam Masuk': (item.status === 'IZIN' || item.status === 'SAKIT') ? '-' : (item.record?.check_in ? new Date(item.record.check_in).toLocaleTimeString('id-ID') : '-'),
         'Jam Pulang': (item.status === 'IZIN' || item.status === 'SAKIT') ? '-' : (item.record?.check_out ? new Date(item.record.check_out).toLocaleTimeString('id-ID') : '-'),
-        'Durasi Kerja': (item.status === 'IZIN' || item.status === 'SAKIT') ? '-' : calculateDuration(item.record?.check_in, item.record?.check_out), // KOLOM BARU
+        'Durasi Kerja': (item.status === 'IZIN' || item.status === 'SAKIT') ? '-' : calculateDuration(item.record?.check_in, item.record?.check_out),
         Keterangan: item.record?.notes || item.record?.weekend_reason || '-'
     }))
 
@@ -192,7 +190,6 @@ export default function RekapPage() {
     showToast("Berhasil Download Excel", 'success')
   }
 
-  // 4. CRUD ACTIONS
   const handleEditClick = (item: StaffStatus) => {
     if (item.status === 'IZIN') setFormType('IZIN')
     else if (item.status === 'SAKIT') setFormType('SAKIT')
@@ -305,7 +302,7 @@ export default function RekapPage() {
                         <th className="px-6 py-4">Nama Staff</th>
                         <th className="px-6 py-4">Masuk</th>
                         <th className="px-6 py-4">Pulang</th>
-                        <th className="px-6 py-4">Durasi</th> {/* KOLOM BARU */}
+                        <th className="px-6 py-4">Durasi</th>
                         <th className="px-6 py-4">Ket</th>
                         <th className="px-6 py-4 text-right">Aksi</th>
                     </tr>
@@ -336,8 +333,6 @@ export default function RekapPage() {
                             <td className="px-6 py-4 font-mono">
                                 {(item.status === 'IZIN' || item.status === 'SAKIT') ? '-' : (item.record?.check_out ? new Date(item.record.check_out).toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'}) : item.record?.check_in ? <span className="text-xs italic text-blue-500 animate-pulse">Belum Pulang</span> : '-')}
                             </td>
-
-                            {/* KOLOM DURASI (BARU) */}
                             <td className="px-6 py-4 font-mono font-bold text-slate-600">
                                 {(item.status === 'IZIN' || item.status === 'SAKIT') ? '-' : calculateDuration(item.record?.check_in, item.record?.check_out)}
                             </td>
@@ -357,7 +352,6 @@ export default function RekapPage() {
         </div>
       </div>
 
-      {/* MODAL EDIT SAMA SEPERTI SEBELUMNYA */}
       {editingRow && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4 animate-in fade-in zoom-in">

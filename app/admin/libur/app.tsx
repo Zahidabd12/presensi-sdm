@@ -1,195 +1,264 @@
 'use client'
-import { useEffect, useState } from 'react'
-import { createClient } from '@/lib/supabase'
+
+import { useState, useEffect } from 'react'
+import { createClient } from '@/lib/supabase' // Sesuaikan path jika perlu
+import toast, { Toaster } from 'react-hot-toast'
 import { 
-  Calendar, Trash2, Save, Plus, AlertCircle, CalendarDays, CheckCircle 
+  Calendar, Save, Trash2, ArrowRight, 
+  AlertCircle, CheckCircle, Info 
 } from 'lucide-react'
 
-type Holiday = {
-  id: string
-  date: string
-  description: string
+// Interface Data
+type Libur = {
+  id: number
+  tanggal: string
+  keterangan: string
 }
 
-export default function KelolaLiburPage() {
-  const [holidays, setHolidays] = useState<Holiday[]>([])
-  const [loading, setLoading] = useState(true)
-  const [isSaving, setIsSaving] = useState(false)
+export default function AdminLiburPage() {
+  const [loading, setLoading] = useState(false)
+  const [listLibur, setListLibur] = useState<Libur[]>([])
   
-  // STATE INPUT MASSAL
-  const [startDate, setStartDate] = useState('')
-  const [endDate, setEndDate] = useState('')
-  const [description, setDescription] = useState('')
-  const [previewDates, setPreviewDates] = useState<string[]>([])
+  // State Form
+  const [form, setForm] = useState({
+    dariTanggal: '',
+    sampaiTanggal: '',
+    keterangan: ''
+  })
 
   const supabase = createClient()
 
+  // 1. Fetch Data saat Load
   useEffect(() => {
-    fetchHolidays()
+    fetchLibur()
   }, [])
 
-  // Efek untuk preview berapa hari yang dipilih
-  useEffect(() => {
-    if (startDate && endDate) {
-        const list = getDatesInRange(startDate, endDate)
-        setPreviewDates(list)
-    } else if (startDate) {
-        setPreviewDates([startDate])
-    } else {
-        setPreviewDates([])
-    }
-  }, [startDate, endDate])
-
-  const fetchHolidays = async () => {
-    setLoading(true)
-    const { data } = await supabase.from('holidays').select('*').order('date', { ascending: true })
-    if (data) setHolidays(data)
-    setLoading(false)
+  const fetchLibur = async () => {
+    const { data, error } = await supabase
+      .from('libur_nasional') // Pastikan nama tabel di Supabase sesuai
+      .select('*')
+      .order('tanggal', { ascending: true }) // Urutkan dari tanggal terdekat
+    
+    if (data) setListLibur(data)
+    if (error) console.error('Error fetch:', error)
   }
 
-  // Helper: Generate Tanggal dari Range
-  const getDatesInRange = (start: string, end: string) => {
-    const date = new Date(start)
-    const stop = new Date(end)
-    const list = []
-    while (date <= stop) {
-        list.push(new Date(date).toISOString().split('T')[0])
-        date.setDate(date.getDate() + 1)
+  // 2. Logic "Pintar" Generator Tanggal
+  const getDatesInRange = (startDate: string, endDate: string) => {
+    const dates = []
+    const current = new Date(startDate)
+    const end = new Date(endDate)
+
+    while (current <= end) {
+      dates.push(new Date(current).toISOString().split('T')[0])
+      current.setDate(current.getDate() + 1)
     }
-    return list
+    return dates
   }
 
-  const handleSave = async (e: React.FormEvent) => {
+  // 3. Handle Submit
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!startDate || !description) return
-    setIsSaving(true)
+    setLoading(true)
 
-    // 1. Tentukan Range (Jika EndDate kosong, anggap 1 hari saja)
-    const finalEndDate = endDate || startDate
-    const datesToInsert = getDatesInRange(startDate, finalEndDate)
+    try {
+      let dataToInsert = []
 
-    // 2. Siapkan Payload
-    const payload = datesToInsert.map(date => ({
-        date: date,
-        description: description
-    }))
+      // LOGIC: Single Day vs Bulk Insert
+      if (!form.sampaiTanggal) {
+        // Cuma 1 Hari
+        dataToInsert.push({
+          tanggal: form.dariTanggal,
+          keterangan: form.keterangan
+        })
+      } else {
+        // Rentang Tanggal (Looping)
+        const dateRange = getDatesInRange(form.dariTanggal, form.sampaiTanggal)
+        dataToInsert = dateRange.map(tgl => ({
+          tanggal: tgl,
+          keterangan: form.keterangan
+        }))
+      }
 
-    // 3. Simpan ke Supabase (Upsert: Jika tanggal sudah ada, update keterangannya)
-    const { error } = await supabase.from('holidays').upsert(payload, { onConflict: 'date' })
+      // Eksekusi ke Supabase
+      const { error } = await supabase
+        .from('libur_nasional')
+        .insert(dataToInsert)
 
-    if (!error) {
-        alert(`Berhasil menambahkan ${datesToInsert.length} hari libur!`)
-        setStartDate('')
-        setEndDate('')
-        setDescription('')
-        fetchHolidays()
-    } else {
-        alert("Gagal menyimpan: " + error.message)
+      if (error) {
+        if (error.code === '23505') throw new Error('Tanggal tersebut sudah ada di database!')
+        throw error
+      }
+
+      toast.success(`Sukses! ${dataToInsert.length} hari libur ditambahkan.`, {
+        style: { background: '#10B981', color: '#fff' }
+      })
+      
+      // Reset Form & Refresh Table
+      setForm({ dariTanggal: '', sampaiTanggal: '', keterangan: '' })
+      fetchLibur()
+
+    } catch (error: any) {
+      toast.error(error.message || 'Gagal menyimpan data.', {
+        style: { background: '#EF4444', color: '#fff' }
+      })
+    } finally {
+      setLoading(false)
     }
-    setIsSaving(false)
   }
 
-  const handleDelete = async (id: string) => {
-    if(!confirm("Hapus hari libur ini?")) return
-    const { error } = await supabase.from('holidays').delete().eq('id', id)
-    if (!error) fetchHolidays()
+  // 4. Handle Delete
+  const handleDelete = async (id: number) => {
+    if (!confirm('Yakin ingin menghapus hari libur ini?')) return
+
+    const { error } = await supabase.from('libur_nasional').delete().eq('id', id)
+    if (!error) {
+      toast.success('Data dihapus')
+      fetchLibur()
+    }
+  }
+
+  // Helper Format Tanggal Indo
+  const formatTgl = (tgl: string) => {
+    return new Date(tgl).toLocaleDateString('id-ID', {
+      weekday: 'short', day: 'numeric', month: 'short', year: 'numeric'
+    })
   }
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6">
-      
-      {/* HEADER */}
-      <div className="flex flex-col md:flex-row justify-between items-center gap-4 bg-white p-6 rounded-xl shadow-sm border border-slate-100">
-        <div>
-            <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-                <CalendarDays className="text-red-500" /> Kelola Hari Libur
-            </h2>
-            <p className="text-slate-500 text-sm">Atur Tanggal Merah & Cuti Bersama agar staff tidak dianggap Alpha.</p>
-        </div>
-        <div className="bg-red-50 text-red-600 px-4 py-2 rounded-lg text-xs font-bold border border-red-100 flex items-center gap-2">
-            <AlertCircle size={16}/> Total Libur Terdaftar: {holidays.length} Hari
-        </div>
-      </div>
+    <div className="min-h-screen bg-slate-900 text-white p-6 font-sans">
+      <Toaster position="top-center" />
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="max-w-5xl mx-auto space-y-8">
         
-        {/* FORM INPUT MASSAL */}
-        <div className="md:col-span-1">
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 sticky top-6">
-                <h3 className="font-bold text-lg mb-4 flex items-center gap-2"><Plus size={20}/> Tambah Libur</h3>
+        {/* HEADER */}
+        <div className="flex items-center gap-3 border-b border-slate-700 pb-4">
+          <div className="bg-blue-600/20 p-3 rounded-xl text-blue-400">
+            <Calendar size={32} />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold text-white">Kelola Hari Libur</h1>
+            <p className="text-slate-400 text-sm">Input tanggal merah agar karyawan tidak dianggap Alpha.</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          
+          {/* KOLOM KIRI: FORM INPUT */}
+          <div className="lg:col-span-1 space-y-6">
+            <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 shadow-xl">
+              <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-blue-400">
+                <Info size={18}/> Form Input
+              </h2>
+
+              <form onSubmit={handleSubmit} className="space-y-4">
                 
-                <form onSubmit={handleSave} className="space-y-4">
-                    <div>
-                        <label className="text-xs font-bold text-slate-500 uppercase">Dari Tanggal (Mulai)</label>
-                        <input type="date" required className="w-full p-2 border rounded mt-1 bg-slate-50 outline-none focus:ring-2 focus:ring-blue-500" 
-                            value={startDate} onChange={e => setStartDate(e.target.value)} />
-                    </div>
+                {/* Dari Tanggal */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Dari Tanggal</label>
+                  <input
+                    type="date"
+                    required
+                    value={form.dariTanggal}
+                    onChange={e => setForm({...form, dariTanggal: e.target.value})}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white focus:ring-2 focus:ring-blue-500 outline-none transition"
+                  />
+                </div>
 
-                    <div>
-                        <label className="text-xs font-bold text-slate-500 uppercase">Sampai Tanggal</label>
-                        <input type="date" className="w-full p-2 border rounded mt-1 bg-slate-50 outline-none focus:ring-2 focus:ring-blue-500" 
-                            value={endDate} onChange={e => setEndDate(e.target.value)} />
-                        <p className="text-[10px] text-slate-400 mt-1">*Kosongkan jika hanya 1 hari libur.</p>
-                    </div>
+                {/* Sampai Tanggal */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase mb-1 flex justify-between">
+                    Sampai Tanggal 
+                    <span className="text-xs text-slate-500 lowercase font-normal">(opsional)</span>
+                  </label>
+                  <input
+                    type="date"
+                    min={form.dariTanggal}
+                    value={form.sampaiTanggal}
+                    onChange={e => setForm({...form, sampaiTanggal: e.target.value})}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white focus:ring-2 focus:ring-blue-500 outline-none transition disabled:opacity-50"
+                  />
+                  {form.sampaiTanggal && (
+                    <p className="text-xs text-blue-400 mt-1 animate-pulse">
+                      * Mode Rentang Tanggal Aktif
+                    </p>
+                  )}
+                </div>
 
-                    <div>
-                        <label className="text-xs font-bold text-slate-500 uppercase">Keterangan Libur</label>
-                        <input type="text" required placeholder="Contoh: Cuti Bersama Lebaran" className="w-full p-2 border rounded mt-1 outline-none focus:ring-2 focus:ring-blue-500" 
-                            value={description} onChange={e => setDescription(e.target.value)} />
-                    </div>
+                {/* Keterangan */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Keterangan</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Contoh: Cuti Bersama Natal"
+                    value={form.keterangan}
+                    onChange={e => setForm({...form, keterangan: e.target.value})}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white focus:ring-2 focus:ring-blue-500 outline-none transition"
+                  />
+                </div>
 
-                    {/* Preview Info */}
-                    {previewDates.length > 0 && (
-                        <div className="bg-blue-50 p-3 rounded text-xs text-blue-700 border border-blue-200">
-                            Akan menambahkan <strong>{previewDates.length} hari</strong> libur:<br/>
-                            {new Date(startDate).toLocaleDateString('id-ID')} s/d {endDate ? new Date(endDate).toLocaleDateString('id-ID') : new Date(startDate).toLocaleDateString('id-ID')}
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl shadow-lg shadow-blue-600/20 flex items-center justify-center gap-2 transition active:scale-95 mt-4"
+                >
+                  {loading ? 'Menyimpan...' : (
+                    <> <Save size={18} /> Simpan Jadwal </>
+                  )}
+                </button>
+              </form>
+            </div>
+          </div>
+
+          {/* KOLOM KANAN: LIST DATA */}
+          <div className="lg:col-span-2">
+            <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 shadow-xl h-full flex flex-col">
+              <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-emerald-400">
+                <CheckCircle size={18}/> Daftar Libur Terjadwal
+              </h2>
+              
+              <div className="flex-1 overflow-y-auto max-h-[500px] pr-2 custom-scrollbar">
+                {listLibur.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center h-40 text-slate-500 space-y-2 border-2 border-dashed border-slate-700 rounded-xl">
+                    <AlertCircle size={32} />
+                    <p>Belum ada data libur.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {listLibur.map((item) => (
+                      <div key={item.id} className="group flex items-center justify-between p-4 bg-slate-900/50 border border-slate-700 rounded-xl hover:border-blue-500/50 transition">
+                        <div className="flex items-center gap-4">
+                          <div className="bg-slate-800 p-3 rounded-lg text-center min-w-[60px]">
+                            <span className="block text-xl font-bold text-blue-400">
+                              {new Date(item.tanggal).getDate()}
+                            </span>
+                            <span className="block text-[10px] uppercase text-slate-400 font-bold">
+                              {new Date(item.tanggal).toLocaleDateString('id-ID', { month: 'short' })}
+                            </span>
+                          </div>
+                          <div>
+                            <h3 className="font-bold text-slate-200">{item.keterangan}</h3>
+                            <p className="text-xs text-slate-500">{formatTgl(item.tanggal)}</p>
+                          </div>
                         </div>
-                    )}
-
-                    <button disabled={isSaving} className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition flex justify-center gap-2">
-                        {isSaving ? 'Menyimpan...' : <><Save size={18}/> Simpan Semua</>}
-                    </button>
-                </form>
+                        
+                        <button 
+                          onClick={() => handleDelete(item.id)}
+                          className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition"
+                          title="Hapus"
+                        >
+                          <Trash2 size={18} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-        </div>
+          </div>
 
-        {/* TABEL LIST LIBUR */}
-        <div className="md:col-span-2">
-            <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
-                <div className="px-6 py-4 border-b border-slate-100 bg-slate-50 font-bold text-slate-700">
-                    Daftar Tanggal Merah
-                </div>
-                <div className="max-h-[600px] overflow-y-auto">
-                    <table className="w-full text-sm text-left">
-                        <thead className="bg-slate-50 text-slate-500 sticky top-0">
-                            <tr>
-                                <th className="px-6 py-3">Tanggal</th>
-                                <th className="px-6 py-3">Keterangan</th>
-                                <th className="px-6 py-3 text-right">Aksi</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                            {loading ? <tr><td colSpan={3} className="p-6 text-center text-slate-400">Loading...</td></tr> :
-                             holidays.length === 0 ? <tr><td colSpan={3} className="p-6 text-center text-slate-400">Belum ada hari libur.</td></tr> :
-                             holidays.map((h) => (
-                                <tr key={h.id} className="hover:bg-slate-50">
-                                    <td className="px-6 py-3 font-mono text-red-600 font-bold">
-                                        {new Date(h.date).toLocaleDateString('id-ID', { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' })}
-                                    </td>
-                                    <td className="px-6 py-3 font-medium text-slate-700">{h.description}</td>
-                                    <td className="px-6 py-3 text-right">
-                                        <button onClick={() => handleDelete(h.id)} className="text-red-400 hover:text-red-600 p-2 rounded hover:bg-red-50 transition">
-                                            <Trash2 size={18}/>
-                                        </button>
-                                    </td>
-                                </tr>
-                             ))}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
         </div>
-
       </div>
     </div>
   )

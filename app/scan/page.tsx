@@ -6,7 +6,8 @@ import { getDistance } from 'geolib'
 import { 
   LogOut, Camera, XCircle, CheckCircle, RefreshCw, 
   AlertTriangle, Calendar, Repeat, MapPin, 
-  ArrowRightCircle, ArrowLeftCircle, ShieldCheck, Moon, Star, Heart
+  ArrowRightCircle, ArrowLeftCircle, ShieldCheck, Moon, Star, Heart,
+  Lock, Timer
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
@@ -22,6 +23,7 @@ const SECRET_TOKEN = "ABSENSI-SDM-TOKEN-RAHASIA-2026"
 // --- CONFIG JAM ---
 const WORK_END_HOUR = 15 // Batas pulang normal (15:00)
 const OVERTIME_HOUR = 18 // Batas dianggap lembur (18:00)
+const LATE_LIMIT_HOUR = 12 // Batas Akhir Absen Masuk (12:00)
 
 export default function ScanPage() {
   const [step, setStep] = useState<'GPS' | 'READY' | 'WEEKEND_CHECK' | 'EARLY_LEAVE_CHECK' | 'SCANNING' | 'RESULT'>('GPS')
@@ -32,7 +34,7 @@ export default function ScanPage() {
   // State Logic
   const [weekendReason, setWeekendReason] = useState('Lembur Project')
   const [earlyLeaveReason, setEarlyLeaveReason] = useState('')
-  const [isOvertime, setIsOvertime] = useState(false) // State baru untuk deteksi lembur
+  const [isOvertime, setIsOvertime] = useState(false)
 
   const [facingMode, setFacingMode] = useState<"environment" | "user">("environment")
   const [time, setTime] = useState(new Date())
@@ -101,6 +103,14 @@ export default function ScanPage() {
   }, [])
 
   const handleStartButton = () => {
+    const currentHour = new Date().getHours()
+    
+    // LOGIC BARU: Cek Batas Jam 12 Siang (Hanya untuk Masuk)
+    if (!todayRecord?.check_in && currentHour >= LATE_LIMIT_HOUR) {
+        setDebugMsg('❌ Absen Masuk ditutup jam 12:00!')
+        return
+    }
+
     const day = new Date().getDay()
     if (day === 0 || day === 6) {
         setStep('WEEKEND_CHECK') 
@@ -184,9 +194,27 @@ export default function ScanPage() {
       return new Date(isoString).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
   }
 
+  // Helper Hitung Durasi Kerja
+  const getWorkDuration = () => {
+    if (!todayRecord?.check_in || !todayRecord?.check_out) return '0j 0m'
+    
+    const start = new Date(todayRecord.check_in).getTime()
+    const end = new Date(todayRecord.check_out).getTime()
+    const diff = end - start
+
+    const hours = Math.floor(diff / (1000 * 60 * 60))
+    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60))
+
+    return `${hours}j ${minutes}m`
+  }
+
   const dateString = time.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
   const timeString = time.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   const isDoneToday = todayRecord?.check_in && todayRecord?.check_out
+  
+  // Logic Button Disable
+  const currentHour = time.getHours()
+  const isLate = !todayRecord?.check_in && currentHour >= LATE_LIMIT_HOUR
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-900 text-white font-sans overflow-hidden">
@@ -233,10 +261,19 @@ export default function ScanPage() {
 
         {/* 1. SUDAH SELESAI */}
         {isDoneToday ? (
-             <div className="w-full bg-gradient-to-br from-green-800/40 to-emerald-900/40 border border-green-500/30 p-8 rounded-3xl text-center animate-in zoom-in duration-500 shadow-2xl">
-                <div className="bg-green-500/20 w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6 ring-4 ring-green-500/10">
+             <div className="w-full bg-gradient-to-br from-green-800/40 to-emerald-900/40 border border-green-500/30 p-8 rounded-3xl text-center animate-in zoom-in duration-500 shadow-2xl relative overflow-hidden">
+                <div className="bg-green-500/20 w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-4 ring-4 ring-green-500/10">
                     <ShieldCheck size={48} className="text-green-400"/>
                 </div>
+                
+                {/* DURASI KERJA (BARU) */}
+                <div className="mb-6 bg-emerald-950/50 border border-emerald-500/20 py-2 px-4 rounded-xl w-fit mx-auto flex items-center gap-2">
+                    <Timer size={16} className="text-emerald-400"/>
+                    <span className="text-emerald-200 font-mono font-bold text-sm tracking-wide">
+                        Durasi: {getWorkDuration()}
+                    </span>
+                </div>
+
                 <h2 className="text-2xl font-bold text-white mb-2">Tugas Selesai!</h2>
                 <p className="text-green-200/80 mb-6 text-sm leading-relaxed">
                     Data kehadiran lengkap.<br/>Selamat beristirahat.
@@ -252,10 +289,19 @@ export default function ScanPage() {
                     <div className="flex items-center justify-center gap-2 text-slate-400 text-xs bg-slate-800/50 py-1 px-3 rounded-full w-fit mx-auto">
                         <MapPin size={12}/> Lokasi Terjangkau
                     </div>
-                    <button onClick={handleStartButton} className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-5 rounded-2xl shadow-lg shadow-blue-600/30 flex items-center justify-center gap-3 transition active:scale-95 text-lg group">
-                        <div className="bg-white/20 p-2 rounded-full group-hover:scale-110 transition"><Camera size={24} /></div>
-                        {todayRecord?.check_in ? 'SCAN PULANG' : 'SCAN MASUK'}
-                    </button>
+
+                    {/* LOGIC TOMBOL TERKUNCI JIKA TELAT */}
+                    {isLate ? (
+                         <div className="w-full bg-slate-800 text-slate-500 font-bold py-5 rounded-2xl border border-slate-700 flex flex-col items-center justify-center gap-2 cursor-not-allowed">
+                            <Lock size={32} className="text-red-500/50" />
+                            <span>Absen Masuk Ditutup (Lewat 12:00)</span>
+                        </div>
+                    ) : (
+                        <button onClick={handleStartButton} className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-5 rounded-2xl shadow-lg shadow-blue-600/30 flex items-center justify-center gap-3 transition active:scale-95 text-lg group">
+                            <div className="bg-white/20 p-2 rounded-full group-hover:scale-110 transition"><Camera size={24} /></div>
+                            {todayRecord?.check_in ? 'SCAN PULANG' : 'SCAN MASUK'}
+                        </button>
+                    )}
                 </div>
              )
         )}

@@ -5,17 +5,15 @@ import { Users, Clock, CalendarCheck, CalendarDays, AlertCircle } from 'lucide-r
 
 export default function DashboardPage() {
   const [todayData, setTodayData] = useState<any[]>([])
-  const [upcomingHoliday, setUpcomingHoliday] = useState<any>(null) // State untuk Libur
+  const [upcomingHoliday, setUpcomingHoliday] = useState<any>(null) 
   const [loading, setLoading] = useState(true)
   const supabase = createClient()
 
-  // --- FIX TANGGAL (WIB) ---
   const today = (() => {
     const d = new Date()
     const local = new Date(d.getTime() - (d.getTimezoneOffset() * 60000))
     return local.toISOString().split('T')[0]
   })()
-  // -------------------------
 
   useEffect(() => {
     const fetchData = async () => {
@@ -26,15 +24,27 @@ export default function DashboardPage() {
         .eq('date', today)
         .order('check_in', { ascending: false })
       
-      if (attendance) setTodayData(attendance)
+      // 2. Fetch Master Staff untuk ambil nama asli
+      const { data: staffData } = await supabase.from('staff').select('email, name')
 
-      // 2. Fetch Hari Libur Berikutnya (Cuma ambil 1 yang terdekat setelah hari ini)
+      if (attendance) {
+          // GABUNGKAN DATA: Ganti user_name dengan Name dari Master Staff
+          const mergedData = attendance.map(row => {
+              const staff = staffData?.find(s => s.email === row.user_email)
+              return {
+                  ...row,
+                  user_name: staff ? staff.name : (row.user_name || row.user_email) // Fallback kalau gak ketemu
+              }
+          })
+          setTodayData(mergedData)
+      }
+
       const { data: holiday } = await supabase
         .from('libur_nasional')
         .select('*')
-        .gte('tanggal', today) // Ambil yang tanggalnya >= hari ini
+        .gte('tanggal', today) 
         .order('tanggal', { ascending: true })
-        .limit(1) // Cuma butuh 1
+        .limit(1)
         .single()
       
       if (holiday) setUpcomingHoliday(holiday)
@@ -44,7 +54,6 @@ export default function DashboardPage() {
     fetchData()
   }, [today])
 
-  // Helper Format Tanggal Indonesia
   const formatTglIndo = (tgl: string) => {
     return new Date(tgl).toLocaleDateString('id-ID', {
       weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
@@ -60,8 +69,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* STATS CARDS */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4"> {/* Ubah jadi 4 kolom */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 flex items-center gap-4">
             <div className="p-3 bg-blue-50 text-blue-600 rounded-lg"><Users size={24}/></div>
             <div><p className="text-xs font-bold text-slate-400 uppercase">Hadir</p><h3 className="text-2xl font-bold text-slate-700">{todayData.length}</h3></div>
@@ -75,12 +83,8 @@ export default function DashboardPage() {
             <div><p className="text-xs font-bold text-slate-400 uppercase">Lengkap (Out)</p><h3 className="text-2xl font-bold text-slate-700">{todayData.filter(x => x.check_out).length}</h3></div>
         </div>
 
-        {/* CARD INFO LIBUR (BARU) */}
         <div className={`p-6 rounded-xl shadow-sm border flex flex-col justify-center relative overflow-hidden
-          ${upcomingHoliday 
-            ? 'bg-amber-50 border-amber-100' 
-            : 'bg-white border-slate-100'
-          }`}>
+          ${upcomingHoliday ? 'bg-amber-50 border-amber-100' : 'bg-white border-slate-100'}`}>
             {upcomingHoliday ? (
               <>
                 <div className="flex items-center gap-2 text-amber-600 mb-1">
@@ -93,10 +97,7 @@ export default function DashboardPage() {
                 <p className="text-xs text-slate-500 mt-1">
                   {formatTglIndo(upcomingHoliday.tanggal)}
                 </p>
-                {/* Visual Hiasan */}
-                <div className="absolute -right-2 -bottom-4 opacity-10 text-amber-600">
-                  <CalendarDays size={64} />
-                </div>
+                <div className="absolute -right-2 -bottom-4 opacity-10 text-amber-600"><CalendarDays size={64} /></div>
               </>
             ) : (
               <div className="flex items-center gap-3 text-slate-400">
@@ -107,7 +108,6 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* SIMPLE TABLE */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6">
         <h3 className="font-bold text-lg mb-4 text-slate-700 flex items-center gap-2">
            <div className="w-2 h-6 bg-blue-600 rounded-full"></div>
@@ -141,11 +141,11 @@ export default function DashboardPage() {
                   <td className="px-4 py-3 font-medium text-slate-700">
                     <div className="flex items-center gap-3">
                       <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-xs font-bold">
-                        {(row.user_name || row.user_email || 'U').substring(0,2).toUpperCase()}
+                        {(row.user_name || 'U').substring(0,2).toUpperCase()}
                       </div>
                       <div className="flex flex-col">
-                        <span>{row.user_name || row.user_email}</span>
-                        <span className="text-[10px] text-slate-400 font-normal">ID: {row.id}</span>
+                        <span className="font-bold">{row.user_name}</span>
+                        <span className="text-[10px] text-slate-400 font-normal">{row.user_email}</span>
                       </div>
                     </div>
                   </td>

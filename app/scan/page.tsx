@@ -7,7 +7,7 @@ import {
   LogOut, Camera, XCircle, CheckCircle, RefreshCw, 
   AlertTriangle, Calendar, Repeat, MapPin, 
   ArrowRightCircle, ArrowLeftCircle, ShieldCheck, Moon, Star, Heart,
-  Lock, Timer, CalendarDays, PartyPopper
+  Lock, Timer, PartyPopper, Clock
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
@@ -24,6 +24,7 @@ const SECRET_TOKEN = "ABSENSI-SDM-TOKEN-RAHASIA-2026"
 const WORK_END_HOUR = 15 
 const OVERTIME_HOUR = 18 
 const LATE_LIMIT_HOUR = 12 
+const MIN_WORK_HOURS = 4 // Minimal 4 Jam Kerja
 
 export default function ScanPage() {
   const [step, setStep] = useState<'GPS' | 'READY' | 'WEEKEND_CHECK' | 'EARLY_LEAVE_CHECK' | 'SCANNING' | 'RESULT'>('GPS')
@@ -40,21 +41,18 @@ export default function ScanPage() {
   const [time, setTime] = useState(new Date())
   const [todayRecord, setTodayRecord] = useState<{ check_in: string | null, check_out: string | null } | null>(null)
   
-  // --- STATE BARU ---
-  const [userName, setUserName] = useState('') // Nama Staff
-  const [upcomingHoliday, setUpcomingHoliday] = useState<{tanggal: string, keterangan: string} | null>(null) // Libur
+  const [userName, setUserName] = useState('') 
+  const [upcomingHoliday, setUpcomingHoliday] = useState<{tanggal: string, keterangan: string} | null>(null)
 
   const router = useRouter()
   const supabase = createClient()
   const html5QrCodeRef = useRef<Html5Qrcode | null>(null)
 
-  // --- JAM REALTIME ---
   useEffect(() => {
     const timer = setInterval(() => setTime(new Date()), 1000)
     return () => clearInterval(timer)
   }, [])
 
-  // --- CLEANUP ---
   useEffect(() => {
     return () => {
         if (html5QrCodeRef.current?.isScanning) {
@@ -64,7 +62,6 @@ export default function ScanPage() {
     }
   }, [])
 
-  // --- INIT DATA ---
   useEffect(() => {
     const init = async () => {
         const { data: { user } } = await supabase.auth.getUser()
@@ -74,20 +71,13 @@ export default function ScanPage() {
         }
 
         if (user) {
-            // 1. Ambil Nama User dari Tabel Staff
-            const { data: staffData } = await supabase
-                .from('staff')
-                .select('name')
-                .eq('email', user.email)
-                .single()
-            
-            // Set nama (Kalau gak ada di tabel staff, pake email depan)
+            // AMBIL NAMA MASTER
+            const { data: staffData } = await supabase.from('staff').select('name').eq('email', user.email).single()
             setUserName(staffData?.name || user.email?.split('@')[0] || 'Kawan')
 
             const d = new Date()
             const localDate = new Date(d.getTime() - (d.getTimezoneOffset() * 60000)).toISOString().split('T')[0]
             
-            // 2. Cek Absen Hari Ini
             const { data } = await supabase
                 .from('attendance')
                 .select('check_in, check_out')
@@ -97,11 +87,10 @@ export default function ScanPage() {
             
             if (data) setTodayRecord(data)
 
-            // 3. Ambil Libur Terdekat (FITUR BARU)
             const { data: holiday } = await supabase
                 .from('libur_nasional')
                 .select('*')
-                .gte('tanggal', localDate) // Ambil yang tanggalnya >= hari ini
+                .gte('tanggal', localDate)
                 .order('tanggal', { ascending: true })
                 .limit(1)
                 .single()
@@ -131,10 +120,23 @@ export default function ScanPage() {
   const handleStartButton = () => {
     const currentHour = new Date().getHours()
     
-    // LOGIC: Cek Batas Jam 12 Siang
+    // 1. Cek Batas Jam 12 Siang (Masuk)
     if (!todayRecord?.check_in && currentHour >= LATE_LIMIT_HOUR) {
         setDebugMsg('❌ Absen Masuk ditutup jam 12:00!')
         return
+    }
+
+    // 2. CEK MINIMAL 4 JAM (PULANG)
+    if (todayRecord?.check_in && !todayRecord?.check_out) {
+        const checkInTime = new Date(todayRecord.check_in).getTime()
+        const now = new Date().getTime()
+        const diffHours = (now - checkInTime) / (1000 * 60 * 60)
+
+        if (diffHours < MIN_WORK_HOURS) {
+            const remaining = Math.ceil((MIN_WORK_HOURS - diffHours) * 60)
+            setDebugMsg(`⚠️ Belum 4 Jam Kerja! Tunggu ${remaining} menit lagi.`)
+            return
+        }
     }
 
     const day = new Date().getDay()
@@ -157,9 +159,7 @@ export default function ScanPage() {
       await html5QrCode.start({ facingMode: mode }, config, onScanSuccess, () => {})
     } catch (err: any) {
       setStep('READY')
-      let errorText = "Gagal akses kamera."
-      if (JSON.stringify(err).includes("NotReadableError")) errorText = "Kamera sibuk. Restart browser."
-      setDebugMsg(`❌ ${errorText}`)
+      setDebugMsg(`❌ Gagal akses kamera.`)
     }
   }
 
@@ -183,9 +183,10 @@ export default function ScanPage() {
 
       const currentHour = new Date().getHours()
 
+      // Logic Pulang
       if (todayRecord?.check_in && !todayRecord?.check_out) {
           if (currentHour < WORK_END_HOUR) {
-              setStep('EARLY_LEAVE_CHECK')
+              setStep('EARLY_LEAVE_CHECK') // Masih muncul jika < 15:00 tapi > 4 jam
               return
           }
           if (currentHour >= OVERTIME_HOUR) {
@@ -221,7 +222,6 @@ export default function ScanPage() {
     return `${hours}j ${minutes}m`
   }
 
-  // Helper Hitung Mundur Hari (Opsional, buat info "H-Berapa")
   const getDaysUntilHoliday = (holidayDate: string) => {
     const today = new Date()
     today.setHours(0,0,0,0)
@@ -247,8 +247,7 @@ export default function ScanPage() {
             <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center font-bold text-sm">SDM</div>
             <div className="flex flex-col">
                 <span className="font-bold text-sm tracking-wide leading-none">PRESENSI</span>
-                {/* SAPAAN KECIL DI HEADER */}
-                <span className="text-[10px] text-slate-400 font-normal">Halo, {userName || '...'}</span>
+                <span className="text-[10px] text-slate-400 font-normal">Halo, {userName}</span>
             </div>
         </div>
         <button onClick={async () => { await supabase.auth.signOut(); router.push('/') }} className="text-xs font-bold text-red-400 bg-red-400/10 px-3 py-1.5 rounded-full hover:bg-red-400/20 transition flex items-center gap-1">
@@ -266,7 +265,6 @@ export default function ScanPage() {
                 {timeString}
             </div>
             
-            {/* --- FITUR 1: CARD LIBUR TERDEKAT --- */}
             {upcomingHoliday && (
                 <div className="mt-2 mx-auto w-fit animate-in fade-in slide-in-from-top-4">
                     <div className="bg-amber-500/10 border border-amber-500/30 rounded-full px-4 py-1.5 flex items-center gap-2 text-amber-300">
@@ -299,7 +297,6 @@ export default function ScanPage() {
           </div>
         )}
 
-        {/* 1. SUDAH SELESAI */}
         {isDoneToday ? (
              <div className="w-full bg-gradient-to-br from-green-800/40 to-emerald-900/40 border border-green-500/30 p-8 rounded-3xl text-center animate-in zoom-in duration-500 shadow-2xl relative overflow-hidden">
                 <div className="bg-green-500/20 w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-4 ring-4 ring-green-500/10">
@@ -314,21 +311,14 @@ export default function ScanPage() {
                 </div>
 
                 <h2 className="text-2xl font-bold text-white mb-2">Tugas Selesai!</h2>
-                
-                {/* --- SAPAAN AKHIR --- */}
-                <p className="text-green-100 font-medium text-lg mb-1">
-                    Terima kasih, {userName}!
-                </p>
-                
-                <p className="text-green-200/60 mb-6 text-sm leading-relaxed">
-                    Data kehadiran lengkap.<br/>Selamat beristirahat.
-                </p>
+                <p className="text-green-100 font-medium text-lg mb-1">Terima kasih, {userName}!</p>
+                <p className="text-green-200/60 mb-6 text-sm leading-relaxed">Selamat beristirahat.</p>
                 <div className="flex items-center justify-center gap-2 text-emerald-400 bg-emerald-900/30 py-2 px-4 rounded-full text-xs font-bold w-fit mx-auto">
                     <Moon size={12}/> Sampai Jumpa Besok
                 </div>
              </div>
         ) : (
-             /* 2. TOMBOL SCAN UTAMA */
+             /* LOGIC TOMBOL */
              step === 'READY' && (
                 <div className="w-full space-y-4 animate-in slide-in-from-bottom-5">
                     <div className="flex items-center justify-center gap-2 text-slate-400 text-xs bg-slate-800/50 py-1 px-3 rounded-full w-fit mx-auto">
@@ -357,7 +347,6 @@ export default function ScanPage() {
             </div>
         )}
 
-        {/* --- KAMERA AREA --- */}
         <div className={`w-full ${step === 'SCANNING' ? 'block' : 'hidden'} animate-in fade-in`}>
             <div className="relative rounded-3xl overflow-hidden border-4 border-slate-800 shadow-2xl bg-black">
                 <div id="reader" className="w-full h-[350px] bg-black object-cover"></div>
@@ -373,7 +362,6 @@ export default function ScanPage() {
             <button onClick={() => { if (html5QrCodeRef.current?.isScanning) html5QrCodeRef.current.stop().catch(console.error); setStep('READY') }} className="mt-6 w-full py-3 text-slate-400 bg-slate-800 rounded-xl font-bold hover:bg-slate-700 hover:text-white transition">Batalkan</button>
         </div>
 
-        {/* --- MODAL ALASAN PULANG AWAL --- */}
         {step === 'EARLY_LEAVE_CHECK' && (
              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
                 <div className="bg-slate-800 border border-slate-600 w-full max-w-sm p-6 rounded-2xl shadow-2xl space-y-4">
@@ -388,7 +376,6 @@ export default function ScanPage() {
              </div>
         )}
 
-        {/* --- MODAL WEEKEND --- */}
         {step === 'WEEKEND_CHECK' && (
              <div className="w-full bg-slate-800 p-6 rounded-2xl border border-slate-700 shadow-xl animate-in zoom-in">
                 <div className="flex items-center gap-2 text-amber-400 font-bold mb-4 text-lg border-b border-slate-700 pb-4"><Calendar size={24}/> Presensi Hari Libur</div>
@@ -406,7 +393,6 @@ export default function ScanPage() {
              </div>
         )}
 
-        {/* --- HASIL SCAN (RESULT) --- */}
         {step === 'RESULT' && (
              <div className={`w-full p-8 rounded-3xl text-center border shadow-2xl animate-in zoom-in 
                 ${isSuccess 
@@ -431,16 +417,14 @@ export default function ScanPage() {
 
                 {isSuccess && isOvertime ? (
                     <div className="space-y-2">
-                         {/* --- FITUR 2: SAPAAN LEMBUR --- */}
                         <p className="text-indigo-200 text-lg font-medium">Terima kasih atas dedikasinya, {userName}!</p>
                         <p className="text-slate-400 text-sm flex items-center justify-center gap-1">
                             <Heart size={12} className="text-red-500 fill-red-500"/> Hati-hati di jalan pulang.
                         </p>
                     </div>
                 ) : isSuccess ? (
-                    // --- FITUR 2: SAPAAN NORMAL ---
                     <div className="space-y-2">
-                        <p className="text-green-200 text-lg font-medium">Terima kasih atas kontribusinya hari ini, {userName}!</p>
+                        <p className="text-green-200 text-lg font-medium">Terima kasih atas kontribusinya, {userName}!</p>
                         <p className="text-slate-400 text-sm whitespace-pre-line">{status}</p>
                     </div>
                 ) : (

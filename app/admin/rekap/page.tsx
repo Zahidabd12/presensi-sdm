@@ -7,15 +7,15 @@ import {
   FileSpreadsheet, Edit, Save, X, UserX, CheckCircle, 
   Trash2, Search, Clock, Coffee, Stethoscope, User, 
   CalendarDays, Filter, DownloadCloud, AlertCircle, RefreshCw, Palmtree,
-  Banknote, AlertTriangle
+  AlertTriangle
 } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { updateAttendanceData, deleteAttendanceData } from '@/app/actions'
 
 // --- KONFIGURASI GAJI & JAM ---
-const HOURLY_RATE = 8000 // Rp 8.000 per jam
-const MAX_PAYABLE_HOURS = 8 // Maksimal dibayar 8 jam
-const MIN_WORK_HOURS = 4 // Minimal kerja 4 jam (hanya warning visual)
+const HOURLY_RATE = 8000
+const MAX_PAYABLE_HOURS = 8
+const MIN_WORK_HOURS = 4
 
 // --- TIPE DATA ---
 type Attendance = {
@@ -27,48 +27,35 @@ type Attendance = {
 type StaffStatus = { 
     email: string; 
     name: string; 
+    dateStr: string; // Tambahan untuk sorting tanggal
     position?: string;
     status: 'HADIR' | 'KERJA' | 'ALPHA' | 'IZIN' | 'SAKIT' | 'LIBUR'; 
     record?: Attendance | null;
     holidayInfo?: string | null;
     stats?: {
-        rawHours: number;     // Durasi asli
-        paidHours: number;    // Durasi yang dibayar (max 8)
-        wage: number;         // Total Rupiah
-        isLess4Hours: boolean; // Flag jika < 4 jam
+        rawHours: number;
+        paidHours: number;
+        wage: number;
+        isLess4Hours: boolean;
     }
 }
 
 // --- HELPER LOGIC ---
 const calculateStats = (inTime: string | null | undefined, outTime: string | null | undefined) => {
     if (!inTime || !outTime) return { rawHours: 0, paidHours: 0, wage: 0, isLess4Hours: false };
-    
     const start = new Date(inTime).getTime();
     const end = new Date(outTime).getTime();
     const diffMs = end - start;
-    
     if (diffMs < 0) return { rawHours: 0, paidHours: 0, wage: 0, isLess4Hours: false };
 
-    // Konversi ke Jam (Float)
     const rawHours = diffMs / (1000 * 60 * 60);
-    
-    // Rule: Max 8 Jam
     const paidHours = Math.min(rawHours, MAX_PAYABLE_HOURS);
-    
-    // Rule: Hitung Gaji (Pembulatan ke bawah untuk aman, atau bisa Math.round)
     const wage = Math.floor(paidHours * HOURLY_RATE);
 
-    return {
-        rawHours,
-        paidHours,
-        wage,
-        isLess4Hours: rawHours < MIN_WORK_HOURS
-    };
+    return { rawHours, paidHours, wage, isLess4Hours: rawHours < MIN_WORK_HOURS };
 }
 
-const formatRupiah = (num: number) => {
-    return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(num);
-}
+const formatRupiah = (num: number) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(num);
 
 const formatDurationStr = (hours: number) => {
     const h = Math.floor(hours);
@@ -81,7 +68,18 @@ const getTodayISO = () => {
     return new Date(d.getTime() - (d.getTimezoneOffset() * 60000)).toISOString().split('T')[0]
 }
 
-// --- HELPER EXCEL ---
+// Helper Generate Array Tanggal
+const getDatesInRange = (startDate: string, endDate: string) => {
+    const dates = []
+    const current = new Date(startDate)
+    const end = new Date(endDate)
+    while (current <= end) {
+        dates.push(new Date(current).toISOString().split('T')[0])
+        current.setDate(current.getDate() + 1)
+    }
+    return dates
+}
+
 const generateExcel = (data: any[], fileName: string) => {
     const ws = XLSX.utils.json_to_sheet(data); 
     const wb = XLSX.utils.book_new();
@@ -98,7 +96,7 @@ export default function RekapPage() {
   const [tableData, setTableData] = useState<StaffStatus[]>([]) 
   const [loading, setLoading] = useState(true)
   const [mode, setMode] = useState<'DAILY' | 'RANGE'>('DAILY') 
-  const [totalRevenue, setTotalRevenue] = useState(0) // State Total Gaji
+  const [totalRevenue, setTotalRevenue] = useState(0)
 
   const [editingRow, setEditingRow] = useState<Attendance | null>(null)
   const [formType, setFormType] = useState<'HADIR' | 'IZIN' | 'SAKIT'>('HADIR')
@@ -112,10 +110,8 @@ export default function RekapPage() {
     const init = async () => {
         const { data: { user } } = await supabase.auth.getUser()
         if (!user) { router.push('/'); return }
-
         const { data } = await supabase.from('staff').select('email, name').order('name')
         if (data) setStaffList(data)
-        
         fetchData()
     }
     init()
@@ -127,15 +123,14 @@ export default function RekapPage() {
         const isDailyMode = startDate === endDate
         setMode(isDailyMode ? 'DAILY' : 'RANGE')
 
-        // 1. QUERY ATTENDANCE
+        // 1. QUERY ATTENDANCE (Data Mentah Absen)
         let query = supabase
             .from('attendance')
             .select('*')
             .gte('date', startDate)
             .lte('date', endDate)
-            .order('date', { ascending: false }) 
-            .order('check_in', { ascending: true })
-
+        
+        // Filter query absensi kalau staff tertentu dipilih (biar ringan)
         if (selectedStaff !== 'ALL') {
             query = query.eq('user_email', selectedStaff)
         }
@@ -150,77 +145,69 @@ export default function RekapPage() {
         let finalReport: StaffStatus[] = []
         let tempTotalRevenue = 0
 
-        if (isDailyMode) {
-            // --- MODE HARIAN ---
-            const isTodayHoliday = holidayData?.find(h => h.tanggal === startDate)
+        // --- LOGIC UTAMA: LOOPING STAFF x TANGGAL ---
+        
+        // A. Tentukan List Staff yang mau dicek
+        const staffToProcess = selectedStaff === 'ALL' 
+            ? allStaff 
+            : allStaff?.filter(s => s.email === selectedStaff)
 
-            allStaff?.forEach((staff) => {
-                if (selectedStaff !== 'ALL' && staff.email !== selectedStaff) return
+        // B. Generate Range Tanggal
+        const dateRange = getDatesInRange(startDate, endDate)
 
-                const record = presenceData?.find(p => p.user_email === staff.email)
+        staffToProcess?.forEach(staff => {
+            dateRange.forEach(dateStr => {
+                
+                // Cari data absen di tanggal ini & staff ini
+                const record = presenceData?.find(p => p.user_email === staff.email && p.date === dateStr)
+                
+                // Cari data libur di tanggal ini
+                const holiday = holidayData?.find(h => h.tanggal === dateStr)
+
                 let status: any = 'ALPHA'
                 let holidayInfo = null
                 let stats = { rawHours: 0, paidHours: 0, wage: 0, isLess4Hours: false }
 
                 if (record) {
+                    // KASUS 1: ADA DATA ABSEN
                     if (record.work_category === 'Izin') status = 'IZIN'
                     else if (record.work_category === 'Sakit') status = 'SAKIT'
                     else if (record.check_out) {
                         status = 'HADIR'
-                        // Hitung Gaji & Jam
                         stats = calculateStats(record.check_in, record.check_out)
-                    } 
-                    else status = 'KERJA'
-                } else if (isTodayHoliday) {
-                    status = 'LIBUR'
-                    holidayInfo = isTodayHoliday.keterangan
+                    } else {
+                        status = 'KERJA'
+                    }
+                } else {
+                    // KASUS 2: TIDAK ADA ABSEN (Cek Libur)
+                    if (holiday) {
+                        status = 'LIBUR'
+                        holidayInfo = holiday.keterangan
+                    }
+                    // Jika bukan libur & tidak absen -> ALPHA (Default)
                 }
 
                 tempTotalRevenue += stats.wage
+
                 finalReport.push({
-                    email: staff.email, 
-                    name: staff.name, // NAMA PASTI DARI MASTER
-                    position: staff.position,
-                    status: status, 
-                    record: record || null,
+                    email: staff.email,
+                    name: staff.name,
+                    dateStr: dateStr, // Penting untuk sorting tanggal
+                    status: status,
+                    record: record || null, // Record bisa null kalau Alpha/Libur
                     holidayInfo: holidayInfo,
                     stats: stats
                 })
             })
-            const priority = { 'KERJA': 1, 'HADIR': 2, 'IZIN': 3, 'SAKIT': 3, 'LIBUR': 4, 'ALPHA': 5 }
-            finalReport.sort((a, b) => priority[a.status] - priority[b.status])
+        })
 
-        } else {
-            // --- MODE RIWAYAT ---
-            finalReport = presenceData?.map(row => {
-                let status: any = 'HADIR'
-                let stats = { rawHours: 0, paidHours: 0, wage: 0, isLess4Hours: false }
-
-                if (row.work_category === 'Izin') status = 'IZIN'
-                else if (row.work_category === 'Sakit') status = 'SAKIT'
-                else if (!row.check_out) status = 'KERJA'
-                else {
-                    // Hitung Gaji & Jam
-                    stats = calculateStats(row.check_in, row.check_out)
-                }
-
-                const isHoliday = holidayData?.find(h => h.tanggal === row.date)
-                const currentStaffData = allStaff?.find(s => s.email === row.user_email)
-                
-                // Gunakan Nama Master jika ada, jika tidak fallback ke user_name attendance
-                const realName = currentStaffData ? currentStaffData.name : (row.user_name || row.user_email)
-
-                tempTotalRevenue += stats.wage
-                return {
-                    email: row.user_email,
-                    name: realName,
-                    status: status,
-                    record: row,
-                    holidayInfo: isHoliday ? `Masuk saat: ${isHoliday.keterangan}` : null,
-                    stats: stats
-                }
-            }) || []
-        }
+        // SORTING: Tanggal Descending (Terbaru di atas), lalu Nama
+        finalReport.sort((a, b) => {
+            if (a.dateStr !== b.dateStr) {
+                return new Date(b.dateStr).getTime() - new Date(a.dateStr).getTime()
+            }
+            return a.name.localeCompare(b.name)
+        })
 
         setTableData(finalReport)
         setTotalRevenue(tempTotalRevenue)
@@ -236,7 +223,7 @@ export default function RekapPage() {
     if (tableData.length === 0) { showToast("Data kosong", 'error'); return }
 
     const dataToExport = tableData.map(item => ({
-        Tanggal: item.record?.date || startDate,
+        Tanggal: item.dateStr,
         Nama: item.name,
         Status: item.status === 'KERJA' ? 'Belum Pulang' : item.status,
         'Masuk': item.record?.check_in ? new Date(item.record.check_in).toLocaleTimeString('id-ID') : '-',
@@ -252,23 +239,71 @@ export default function RekapPage() {
     showToast("Berhasil Download Excel", 'success')
   }
 
-  // --- STANDARD HANDLERS (EDIT, SAVE, DELETE, TOAST) ---
   const handleEditClick = (item: StaffStatus) => {
     if (item.status === 'IZIN') setFormType('IZIN'); else if (item.status === 'SAKIT') setFormType('SAKIT'); else setFormType('HADIR')
-    if (item.record) setEditingRow(item.record)
-    else setEditingRow({ id: '', user_email: item.email, user_name: item.name, date: startDate, check_in: `${startDate}T08:00`, check_out: null, duration: null, work_category: 'Administrasi', task_list: '', notes: '', weekend_reason: null })
+    
+    if (item.record) {
+        setEditingRow(item.record)
+    } else {
+        // Buat record palsu untuk inisialisasi edit Alpha/Libur jadi Hadir
+        setEditingRow({ 
+            id: '', 
+            user_email: item.email, 
+            user_name: item.name, 
+            date: item.dateStr, // Ambil tanggal dari row
+            check_in: `${item.dateStr}T08:00`, 
+            check_out: null, duration: null, work_category: 'Administrasi', task_list: '', notes: '', weekend_reason: null 
+        })
+    }
   }
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault(); if(!editingRow) return; setIsSaving(true)
     const dataToSave = { ...editingRow }
+    
+    // Jika ID kosong (edit Alpha/Libur), kita harus INSERT, bukan UPDATE
+    // Tapi function `updateAttendanceData` biasanya pakai ID. 
+    // Kita perlu sedikit trick: jika ID kosong, panggil `supabase.insert` langsung atau buat server action `upsert`.
+    // Disini saya asumsikan `updateAttendanceData` menangani update by ID.
+    // Jika ini INSERT baru (dari Alpha ke Hadir), kita butuh endpoint insert.
+    // Untuk simplifikasi di kode ini, saya pakai trick: cek ID.
+    
+    // LOGIC SIMPAN:
     if (formType !== 'HADIR') { 
         dataToSave.work_category = formType === 'IZIN' ? 'Izin' : 'Sakit'; 
-        if(!dataToSave.date) dataToSave.date=startDate; dataToSave.check_in=`${dataToSave.date}T00:00:00`; dataToSave.check_out=`${dataToSave.date}T00:00:00` 
-    } else { if (dataToSave.work_category === 'Izin' || dataToSave.work_category === 'Sakit') dataToSave.work_category = 'Administrasi' }
-    const res = await updateAttendanceData(dataToSave)
-    if (res.success) { await fetchData(); showToast('Tersimpan', 'success'); setEditingRow(null) } else showToast(res.message, 'error')
+        if(!dataToSave.date) dataToSave.date=startDate; 
+        dataToSave.check_in=`${dataToSave.date}T00:00:00`; 
+        dataToSave.check_out=`${dataToSave.date}T00:00:00` 
+    } else { 
+        if (dataToSave.work_category === 'Izin' || dataToSave.work_category === 'Sakit') dataToSave.work_category = 'Administrasi' 
+    }
+
+    // Cek Insert atau Update
+    let errorMsg = null
+    if (!dataToSave.id) {
+        // INSERT BARU (Karena sebelumnya Alpha/Libur)
+        const { error } = await supabase.from('attendance').insert({
+            user_email: dataToSave.user_email,
+            user_name: dataToSave.user_name,
+            date: dataToSave.date,
+            check_in: dataToSave.check_in,
+            check_out: dataToSave.check_out,
+            work_category: dataToSave.work_category,
+            notes: dataToSave.notes
+        })
+        if (error) errorMsg = error.message
+    } else {
+        // UPDATE EXISTING
+        const res = await updateAttendanceData(dataToSave)
+        if (!res.success) errorMsg = res.message
+    }
+
+    if (!errorMsg) { await fetchData(); showToast('Tersimpan', 'success'); setEditingRow(null) } 
+    else showToast(errorMsg, 'error')
+    
     setIsSaving(false)
   }
+
   const handleDelete = async (id: string) => { if(!confirm("Hapus?")) return; setIsSaving(true); const res = await deleteAttendanceData(id); if(res.success) { await fetchData(); showToast('Terhapus', 'success') } setIsSaving(false) }
   const showToast = (msg: string, type: 'success'|'error') => { setToast({message: msg, type}); setTimeout(() => setToast(null), 3000) }
   const toLocalISO = (str: string | null) => { if(!str) return ''; const d = new Date(str); return new Date(d.getTime() - (d.getTimezoneOffset() * 60000)).toISOString().slice(0, 16) }
@@ -286,7 +321,6 @@ export default function RekapPage() {
             <p className="text-slate-500 text-sm mt-1">Pantau kehadiran, validasi jam kerja, dan estimasi gaji.</p>
         </div>
         <div className="flex gap-3">
-            {/* CARD TOTAL GAJI */}
             <div className="bg-emerald-50 border border-emerald-200 px-5 py-2 rounded-xl flex flex-col items-end">
                 <span className="text-[10px] uppercase font-bold text-emerald-600 tracking-wider">Total Estimasi Gaji</span>
                 <span className="text-xl font-bold text-emerald-800">{formatRupiah(totalRevenue)}</span>
@@ -343,7 +377,7 @@ export default function RekapPage() {
                         <tr key={idx} className={`hover:bg-blue-50/30 transition group ${item.status==='ALPHA' ? 'bg-red-50/20' : item.status==='LIBUR' ? 'bg-pink-50/30' : ''}`}>
                             
                             <td className="px-6 py-4 font-mono text-slate-600 font-medium">
-                                {item.record ? new Date(item.record.date).toLocaleDateString('id-ID', {day:'2-digit', month:'short'}) : new Date(startDate).toLocaleDateString('id-ID', {day:'2-digit', month:'short'})}
+                                {new Date(item.dateStr).toLocaleDateString('id-ID', {day:'2-digit', month:'short'})}
                             </td>
 
                             <td className="px-6 py-4">
@@ -384,7 +418,7 @@ export default function RekapPage() {
 
                             <td className="px-6 py-4 text-right">
                                 <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-all translate-x-2 group-hover:translate-x-0">
-                                    <button onClick={() => handleEditClick(item)} className="p-2 text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-600 hover:text-white transition shadow-sm"><Edit size={14}/></button>
+                                    <button onClick={() => handleEditClick(item)} className="p-2 text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-600 hover:text-white transition shadow-sm" title={item.record ? "Edit" : "Input Manual"}><Edit size={14}/></button>
                                     {item.record && <button onClick={() => handleDelete(item.record!.id)} className="p-2 text-red-600 bg-red-50 rounded-lg hover:bg-red-600 hover:text-white transition shadow-sm"><Trash2 size={14}/></button>}
                                 </div>
                             </td>
@@ -395,7 +429,7 @@ export default function RekapPage() {
         </div>
       </div>
 
-      {/* --- MODAL EDIT (SAMA SEPERTI SEBELUMNYA) --- */}
+      {/* --- MODAL EDIT --- */}
       {editingRow && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[90] flex items-center justify-center p-4">
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-200">

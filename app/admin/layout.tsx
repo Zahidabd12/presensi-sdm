@@ -2,7 +2,8 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { LayoutDashboard, FileText, QrCode, LogOut, Menu, X, Users } from 'lucide-react'
+// Tambahkan 'Calendar' di import
+import { LayoutDashboard, FileText, QrCode, LogOut, Menu, X, Users, Calendar } from 'lucide-react'
 import { createClient } from '@/lib/supabase'
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
@@ -19,7 +20,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const menuItems = [
     { name: 'Dashboard', href: '/admin/dashboard', icon: LayoutDashboard },
     { name: 'Rekap & Laporan', href: '/admin/rekap', icon: FileText },
-    { name: 'Kelola Staff', href: '/admin/staff', icon: Users }, // <-- MENU BARU
+    { name: 'Kelola Staff', href: '/admin/staff', icon: Users },
+    { name: 'Kelola Libur', href: '/admin/libur', icon: Calendar }, // <--- INI BARU DITAMBAHKAN
     { name: 'QR Generator', href: '/admin/qr', icon: QrCode },
   ]
 

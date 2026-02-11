@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase' 
 import { 
   Calendar, Save, Trash2, 
-  AlertCircle, CheckCircle, Info, X 
+  AlertCircle, CheckCircle, Info, X, CalendarDays 
 } from 'lucide-react'
 
 // Interface Data
@@ -18,7 +18,7 @@ export default function AdminLiburPage() {
   const [loading, setLoading] = useState(false)
   const [listLibur, setListLibur] = useState<Libur[]>([])
   
-  // State Toast Manual (Tanpa Install Library)
+  // State Toast Manual
   const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null)
 
   // State Form
@@ -48,7 +48,7 @@ export default function AdminLiburPage() {
   // Helper Toast
   const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type })
-    setTimeout(() => setToast(null), 3000) // Hilang otomatis dalam 3 detik
+    setTimeout(() => setToast(null), 3000)
   }
 
   // 2. Logic "Pintar" Generator Tanggal
@@ -74,13 +74,11 @@ export default function AdminLiburPage() {
 
       // LOGIC: Single Day vs Bulk Insert
       if (!form.sampaiTanggal) {
-        // Cuma 1 Hari
         dataToInsert.push({
           tanggal: form.dariTanggal,
           keterangan: form.keterangan
         })
       } else {
-        // Rentang Tanggal (Looping)
         const dateRange = getDatesInRange(form.dariTanggal, form.sampaiTanggal)
         dataToInsert = dateRange.map(tgl => ({
           tanggal: tgl,
@@ -132,11 +130,11 @@ export default function AdminLiburPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-900 text-white p-6 font-sans relative">
+    <div className="max-w-5xl mx-auto space-y-6 pb-10">
       
-      {/* TOAST NOTIFIKASI MANUAL */}
+      {/* TOAST NOTIFIKASI */}
       {toast && (
-        <div className={`fixed top-6 right-6 z-50 px-6 py-4 rounded-xl shadow-2xl flex items-center gap-3 animate-in slide-in-from-top-5 border-l-8 ${
+        <div className={`fixed bottom-6 right-6 z-50 px-6 py-4 rounded-xl shadow-xl flex items-center gap-3 animate-in slide-in-from-bottom-5 border-l-8 ${
             toast.type === 'success' 
             ? 'bg-white text-slate-800 border-green-500' 
             : 'bg-white text-slate-800 border-red-500'
@@ -146,79 +144,82 @@ export default function AdminLiburPage() {
         </div>
       )}
 
-      <div className="max-w-5xl mx-auto space-y-8">
-        
-        {/* HEADER */}
-        <div className="flex items-center gap-3 border-b border-slate-700 pb-4">
-          <div className="bg-blue-600/20 p-3 rounded-xl text-blue-400">
-            <Calendar size={32} />
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold text-white">Kelola Hari Libur</h1>
-            <p className="text-slate-400 text-sm">Input tanggal merah agar karyawan tidak dianggap Alpha.</p>
-          </div>
+      {/* HEADER PAGE */}
+      <div className="flex flex-col md:flex-row justify-between items-center bg-white p-6 rounded-2xl shadow-sm border border-slate-100 gap-4">
+        <div>
+          <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+             <Calendar className="text-blue-600"/> Kelola Hari Libur
+          </h2>
+          <p className="text-slate-500 text-sm">Input tanggal merah agar karyawan tidak dianggap Alpha.</p>
         </div>
+      </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           
-          {/* KOLOM KIRI: FORM INPUT */}
-          <div className="lg:col-span-1 space-y-6">
-            <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 shadow-xl">
-              <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-blue-400">
-                <Info size={18}/> Form Input
+        {/* KOLOM KIRI: FORM INPUT */}
+        <div className="lg:col-span-1 space-y-6">
+            <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm sticky top-6">
+              <h2 className="text-lg font-bold mb-6 flex items-center gap-2 text-slate-700 border-b pb-4">
+                <Info size={18} className="text-blue-500"/> Form Input
               </h2>
 
-              <form onSubmit={handleSubmit} className="space-y-4">
+              <form onSubmit={handleSubmit} className="space-y-5">
                 
                 {/* Dari Tanggal */}
                 <div>
-                  <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Dari Tanggal</label>
-                  <input
-                    type="date"
-                    required
-                    value={form.dariTanggal}
-                    onChange={e => setForm({...form, dariTanggal: e.target.value})}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white focus:ring-2 focus:ring-blue-500 outline-none transition"
-                  />
+                  <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Dari Tanggal</label>
+                  <div className="relative">
+                    <CalendarDays className="absolute left-3 top-3 text-slate-400" size={18}/>
+                    <input
+                        type="date"
+                        required
+                        value={form.dariTanggal}
+                        onChange={e => setForm({...form, dariTanggal: e.target.value})}
+                        className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-slate-700 font-medium transition"
+                    />
+                  </div>
                 </div>
 
                 {/* Sampai Tanggal */}
                 <div>
-                  <label className="block text-xs font-bold text-slate-400 uppercase mb-1 flex justify-between">
+                  <label className="block text-xs font-bold text-slate-500 uppercase mb-1 flex justify-between">
                     Sampai Tanggal 
-                    <span className="text-xs text-slate-500 lowercase font-normal">(opsional)</span>
+                    <span className="text-[10px] text-slate-400 font-normal lowercase">(opsional / 1 hari saja)</span>
                   </label>
-                  <input
-                    type="date"
-                    min={form.dariTanggal}
-                    value={form.sampaiTanggal}
-                    onChange={e => setForm({...form, sampaiTanggal: e.target.value})}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white focus:ring-2 focus:ring-blue-500 outline-none transition disabled:opacity-50"
-                  />
+                  <div className="relative">
+                    <CalendarDays className="absolute left-3 top-3 text-slate-400" size={18}/>
+                    <input
+                        type="date"
+                        min={form.dariTanggal}
+                        value={form.sampaiTanggal}
+                        onChange={e => setForm({...form, sampaiTanggal: e.target.value})}
+                        className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-slate-700 font-medium transition disabled:opacity-50"
+                    />
+                  </div>
                   {form.sampaiTanggal && (
-                    <p className="text-xs text-blue-400 mt-1 animate-pulse">
-                      * Mode Rentang Tanggal Aktif
+                    <p className="text-xs text-blue-600 mt-2 bg-blue-50 p-2 rounded-lg font-medium flex items-center gap-1">
+                      <Info size={12}/> Mode Rentang Tanggal Aktif
                     </p>
                   )}
                 </div>
 
                 {/* Keterangan */}
                 <div>
-                  <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Keterangan</label>
+                  <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Keterangan</label>
                   <input
                     type="text"
                     required
-                    placeholder="Contoh: Cuti Bersama Natal"
+                    placeholder="Contoh: Cuti Bersama Idul Fitri"
                     value={form.keterangan}
                     onChange={e => setForm({...form, keterangan: e.target.value})}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white focus:ring-2 focus:ring-blue-500 outline-none transition"
+                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-slate-700 font-medium transition"
                   />
                 </div>
 
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl shadow-lg shadow-blue-600/20 flex items-center justify-center gap-2 transition active:scale-95 mt-4"
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl shadow-lg shadow-blue-600/20 flex items-center justify-center gap-2 transition active:scale-95 mt-4"
                 >
                   {loading ? 'Menyimpan...' : (
                     <> <Save size={18} /> Simpan Jadwal </>
@@ -226,56 +227,68 @@ export default function AdminLiburPage() {
                 </button>
               </form>
             </div>
-          </div>
+        </div>
 
-          {/* KOLOM KANAN: LIST DATA */}
-          <div className="lg:col-span-2">
-            <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 shadow-xl h-full flex flex-col">
-              <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-emerald-400">
-                <CheckCircle size={18}/> Daftar Libur Terjadwal
-              </h2>
+        {/* KOLOM KANAN: LIST DATA */}
+        <div className="lg:col-span-2">
+            <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm h-full min-h-[500px] flex flex-col">
+              <div className="flex justify-between items-center mb-6 border-b pb-4">
+                <h2 className="text-lg font-bold text-slate-700 flex items-center gap-2">
+                    <CheckCircle size={18} className="text-emerald-500"/> Daftar Libur
+                </h2>
+                <span className="text-xs font-bold bg-slate-100 px-3 py-1 rounded-full text-slate-500">
+                    Total: {listLibur.length}
+                </span>
+              </div>
               
-              <div className="flex-1 overflow-y-auto max-h-[500px] pr-2 custom-scrollbar">
+              <div className="flex-1 overflow-y-auto max-h-[600px] pr-2 custom-scrollbar">
                 {listLibur.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center h-40 text-slate-500 space-y-2 border-2 border-dashed border-slate-700 rounded-xl">
-                    <AlertCircle size={32} />
-                    <p>Belum ada data libur.</p>
+                  <div className="flex flex-col items-center justify-center h-60 text-slate-400 space-y-3 border-2 border-dashed border-slate-100 rounded-xl bg-slate-50/50">
+                    <AlertCircle size={48} className="text-slate-300" />
+                    <p className="font-medium">Belum ada jadwal libur.</p>
                   </div>
                 ) : (
-                  <div className="space-y-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {listLibur.map((item) => (
-                      <div key={item.id} className="group flex items-center justify-between p-4 bg-slate-900/50 border border-slate-700 rounded-xl hover:border-blue-500/50 transition">
-                        <div className="flex items-center gap-4">
-                          <div className="bg-slate-800 p-3 rounded-lg text-center min-w-[60px]">
-                            <span className="block text-xl font-bold text-blue-400">
-                              {new Date(item.tanggal).getDate()}
-                            </span>
-                            <span className="block text-[10px] uppercase text-slate-400 font-bold">
-                              {new Date(item.tanggal).toLocaleDateString('id-ID', { month: 'short' })}
-                            </span>
-                          </div>
-                          <div>
-                            <h3 className="font-bold text-slate-200">{item.keterangan}</h3>
-                            <p className="text-xs text-slate-500">{formatTgl(item.tanggal)}</p>
-                          </div>
-                        </div>
+                      <div key={item.id} className="group relative bg-white border border-slate-100 rounded-xl p-4 hover:shadow-md hover:border-blue-200 transition-all duration-200 flex flex-col justify-between">
                         
+                        <div className="flex items-start justify-between gap-3">
+                            <div className="flex items-center gap-3">
+                                {/* Tanggal Box */}
+                                <div className="bg-blue-50 border border-blue-100 p-2 rounded-lg text-center min-w-[50px]">
+                                    <span className="block text-lg font-bold text-blue-600 leading-none">
+                                    {new Date(item.tanggal).getDate()}
+                                    </span>
+                                    <span className="block text-[10px] uppercase text-slate-500 font-bold mt-0.5">
+                                    {new Date(item.tanggal).toLocaleDateString('id-ID', { month: 'short' })}
+                                    </span>
+                                </div>
+                                
+                                {/* Info */}
+                                <div>
+                                    <h3 className="font-bold text-slate-700 text-sm line-clamp-2">{item.keterangan}</h3>
+                                    <p className="text-xs text-slate-400 mt-0.5">{formatTgl(item.tanggal)}</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Tombol Hapus (Muncul saat hover) */}
                         <button 
                           onClick={() => handleDelete(item.id)}
-                          className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition"
-                          title="Hapus"
+                          className="absolute top-3 right-3 p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition opacity-0 group-hover:opacity-100"
+                          title="Hapus Jadwal"
                         >
-                          <Trash2 size={18} />
+                          <Trash2 size={16} />
                         </button>
+
                       </div>
                     ))}
                   </div>
                 )}
               </div>
             </div>
-          </div>
-
         </div>
+
       </div>
     </div>
   )

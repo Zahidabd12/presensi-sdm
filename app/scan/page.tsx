@@ -7,7 +7,7 @@ import {
   LogOut, Camera, XCircle, CheckCircle, RefreshCw, 
   AlertTriangle, Calendar, Repeat, MapPin, 
   ArrowRightCircle, ArrowLeftCircle, ShieldCheck, Moon, Star, Heart,
-  Lock, Timer
+  Lock, Timer, CalendarDays, PartyPopper
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
@@ -21,9 +21,9 @@ const MAX_RADIUS = 500
 const SECRET_TOKEN = "ABSENSI-SDM-TOKEN-RAHASIA-2026" 
 
 // --- CONFIG JAM ---
-const WORK_END_HOUR = 15 // Batas pulang normal (15:00)
-const OVERTIME_HOUR = 18 // Batas dianggap lembur (18:00)
-const LATE_LIMIT_HOUR = 12 // Batas Akhir Absen Masuk (12:00)
+const WORK_END_HOUR = 15 
+const OVERTIME_HOUR = 18 
+const LATE_LIMIT_HOUR = 12 
 
 export default function ScanPage() {
   const [step, setStep] = useState<'GPS' | 'READY' | 'WEEKEND_CHECK' | 'EARLY_LEAVE_CHECK' | 'SCANNING' | 'RESULT'>('GPS')
@@ -39,6 +39,10 @@ export default function ScanPage() {
   const [facingMode, setFacingMode] = useState<"environment" | "user">("environment")
   const [time, setTime] = useState(new Date())
   const [todayRecord, setTodayRecord] = useState<{ check_in: string | null, check_out: string | null } | null>(null)
+  
+  // --- STATE BARU ---
+  const [userName, setUserName] = useState('') // Nama Staff
+  const [upcomingHoliday, setUpcomingHoliday] = useState<{tanggal: string, keterangan: string} | null>(null) // Libur
 
   const router = useRouter()
   const supabase = createClient()
@@ -70,9 +74,20 @@ export default function ScanPage() {
         }
 
         if (user) {
+            // 1. Ambil Nama User dari Tabel Staff
+            const { data: staffData } = await supabase
+                .from('staff')
+                .select('name')
+                .eq('email', user.email)
+                .single()
+            
+            // Set nama (Kalau gak ada di tabel staff, pake email depan)
+            setUserName(staffData?.name || user.email?.split('@')[0] || 'Kawan')
+
             const d = new Date()
             const localDate = new Date(d.getTime() - (d.getTimezoneOffset() * 60000)).toISOString().split('T')[0]
             
+            // 2. Cek Absen Hari Ini
             const { data } = await supabase
                 .from('attendance')
                 .select('check_in, check_out')
@@ -81,6 +96,17 @@ export default function ScanPage() {
                 .single()
             
             if (data) setTodayRecord(data)
+
+            // 3. Ambil Libur Terdekat (FITUR BARU)
+            const { data: holiday } = await supabase
+                .from('libur_nasional')
+                .select('*')
+                .gte('tanggal', localDate) // Ambil yang tanggalnya >= hari ini
+                .order('tanggal', { ascending: true })
+                .limit(1)
+                .single()
+            
+            if (holiday) setUpcomingHoliday(holiday)
         }
 
         if (!navigator.geolocation) { setDebugMsg('Browser tidak support GPS.'); return }
@@ -105,7 +131,7 @@ export default function ScanPage() {
   const handleStartButton = () => {
     const currentHour = new Date().getHours()
     
-    // LOGIC BARU: Cek Batas Jam 12 Siang (Hanya untuk Masuk)
+    // LOGIC: Cek Batas Jam 12 Siang
     if (!todayRecord?.check_in && currentHour >= LATE_LIMIT_HOUR) {
         setDebugMsg('❌ Absen Masuk ditutup jam 12:00!')
         return
@@ -155,28 +181,19 @@ export default function ScanPage() {
          return
       }
 
-      // --- LOGIC PINTAR (SMART CHECK) ---
       const currentHour = new Date().getHours()
 
-      // 1. Cek Pulang (Sudah Check In, Belum Check Out)
       if (todayRecord?.check_in && !todayRecord?.check_out) {
-          
-          // A. PULANG AWAL (< 15:00)
           if (currentHour < WORK_END_HOUR) {
               setStep('EARLY_LEAVE_CHECK')
               return
           }
-
-          // B. LEMBUR (> 18:00)
           if (currentHour >= OVERTIME_HOUR) {
-              setIsOvertime(true) // Aktifkan mode lembur
-              // Lanjut proses di bawah
+              setIsOvertime(true) 
           }
       }
 
       setStep('RESULT')
-      
-      // Jika lembur, kirim note otomatis
       const note = (currentHour >= OVERTIME_HOUR && !weekendReason) ? "Lembur (Auto)" : undefined
       processAttendance(note)
   }
@@ -194,25 +211,31 @@ export default function ScanPage() {
       return new Date(isoString).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
   }
 
-  // Helper Hitung Durasi Kerja
   const getWorkDuration = () => {
     if (!todayRecord?.check_in || !todayRecord?.check_out) return '0j 0m'
-    
     const start = new Date(todayRecord.check_in).getTime()
     const end = new Date(todayRecord.check_out).getTime()
     const diff = end - start
-
     const hours = Math.floor(diff / (1000 * 60 * 60))
     const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60))
-
     return `${hours}j ${minutes}m`
+  }
+
+  // Helper Hitung Mundur Hari (Opsional, buat info "H-Berapa")
+  const getDaysUntilHoliday = (holidayDate: string) => {
+    const today = new Date()
+    today.setHours(0,0,0,0)
+    const target = new Date(holidayDate)
+    const diffTime = target.getTime() - today.getTime()
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
+    if (diffDays === 0) return 'Hari Ini'
+    if (diffDays === 1) return 'Besok'
+    return `H-${diffDays}`
   }
 
   const dateString = time.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
   const timeString = time.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   const isDoneToday = todayRecord?.check_in && todayRecord?.check_out
-  
-  // Logic Button Disable
   const currentHour = time.getHours()
   const isLate = !todayRecord?.check_in && currentHour >= LATE_LIMIT_HOUR
 
@@ -222,7 +245,11 @@ export default function ScanPage() {
       <header className="bg-slate-800/80 backdrop-blur-md border-b border-slate-700 p-4 flex justify-between items-center sticky top-0 z-50">
         <div className="flex items-center gap-2">
             <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center font-bold text-sm">SDM</div>
-            <span className="font-bold text-sm tracking-wide">PRESENSI</span>
+            <div className="flex flex-col">
+                <span className="font-bold text-sm tracking-wide leading-none">PRESENSI</span>
+                {/* SAPAAN KECIL DI HEADER */}
+                <span className="text-[10px] text-slate-400 font-normal">Halo, {userName || '...'}</span>
+            </div>
         </div>
         <button onClick={async () => { await supabase.auth.signOut(); router.push('/') }} className="text-xs font-bold text-red-400 bg-red-400/10 px-3 py-1.5 rounded-full hover:bg-red-400/20 transition flex items-center gap-1">
           <LogOut size={14} /> Keluar
@@ -231,13 +258,26 @@ export default function ScanPage() {
 
       <main className="flex-1 flex flex-col items-center justify-center p-4 w-full max-w-md mx-auto space-y-6">
 
-        <div className="w-full text-center space-y-1 pt-4">
+        <div className="w-full text-center space-y-1 pt-2">
             <div className="text-blue-400 text-sm font-medium uppercase tracking-widest flex items-center justify-center gap-2">
                 <Calendar size={14}/> {dateString}
             </div>
             <div className="text-6xl font-mono font-bold text-white tracking-tighter drop-shadow-lg">
                 {timeString}
             </div>
+            
+            {/* --- FITUR 1: CARD LIBUR TERDEKAT --- */}
+            {upcomingHoliday && (
+                <div className="mt-2 mx-auto w-fit animate-in fade-in slide-in-from-top-4">
+                    <div className="bg-amber-500/10 border border-amber-500/30 rounded-full px-4 py-1.5 flex items-center gap-2 text-amber-300">
+                        <PartyPopper size={14} className="animate-bounce" />
+                        <div className="text-xs font-medium flex gap-1">
+                            <span className="font-bold">{getDaysUntilHoliday(upcomingHoliday.tanggal)}:</span> 
+                            <span className="opacity-90 max-w-[150px] truncate">{upcomingHoliday.keterangan}</span>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
 
         <div className="grid grid-cols-2 gap-3 w-full animate-in slide-in-from-bottom-2">
@@ -266,7 +306,6 @@ export default function ScanPage() {
                     <ShieldCheck size={48} className="text-green-400"/>
                 </div>
                 
-                {/* DURASI KERJA (BARU) */}
                 <div className="mb-6 bg-emerald-950/50 border border-emerald-500/20 py-2 px-4 rounded-xl w-fit mx-auto flex items-center gap-2">
                     <Timer size={16} className="text-emerald-400"/>
                     <span className="text-emerald-200 font-mono font-bold text-sm tracking-wide">
@@ -275,7 +314,13 @@ export default function ScanPage() {
                 </div>
 
                 <h2 className="text-2xl font-bold text-white mb-2">Tugas Selesai!</h2>
-                <p className="text-green-200/80 mb-6 text-sm leading-relaxed">
+                
+                {/* --- SAPAAN AKHIR --- */}
+                <p className="text-green-100 font-medium text-lg mb-1">
+                    Terima kasih, {userName}!
+                </p>
+                
+                <p className="text-green-200/60 mb-6 text-sm leading-relaxed">
                     Data kehadiran lengkap.<br/>Selamat beristirahat.
                 </p>
                 <div className="flex items-center justify-center gap-2 text-emerald-400 bg-emerald-900/30 py-2 px-4 rounded-full text-xs font-bold w-fit mx-auto">
@@ -290,7 +335,6 @@ export default function ScanPage() {
                         <MapPin size={12}/> Lokasi Terjangkau
                     </div>
 
-                    {/* LOGIC TOMBOL TERKUNCI JIKA TELAT */}
                     {isLate ? (
                          <div className="w-full bg-slate-800 text-slate-500 font-bold py-5 rounded-2xl border border-slate-700 flex flex-col items-center justify-center gap-2 cursor-not-allowed">
                             <Lock size={32} className="text-red-500/50" />
@@ -313,6 +357,7 @@ export default function ScanPage() {
             </div>
         )}
 
+        {/* --- KAMERA AREA --- */}
         <div className={`w-full ${step === 'SCANNING' ? 'block' : 'hidden'} animate-in fade-in`}>
             <div className="relative rounded-3xl overflow-hidden border-4 border-slate-800 shadow-2xl bg-black">
                 <div id="reader" className="w-full h-[350px] bg-black object-cover"></div>
@@ -328,6 +373,7 @@ export default function ScanPage() {
             <button onClick={() => { if (html5QrCodeRef.current?.isScanning) html5QrCodeRef.current.stop().catch(console.error); setStep('READY') }} className="mt-6 w-full py-3 text-slate-400 bg-slate-800 rounded-xl font-bold hover:bg-slate-700 hover:text-white transition">Batalkan</button>
         </div>
 
+        {/* --- MODAL ALASAN PULANG AWAL --- */}
         {step === 'EARLY_LEAVE_CHECK' && (
              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
                 <div className="bg-slate-800 border border-slate-600 w-full max-w-sm p-6 rounded-2xl shadow-2xl space-y-4">
@@ -342,6 +388,7 @@ export default function ScanPage() {
              </div>
         )}
 
+        {/* --- MODAL WEEKEND --- */}
         {step === 'WEEKEND_CHECK' && (
              <div className="w-full bg-slate-800 p-6 rounded-2xl border border-slate-700 shadow-xl animate-in zoom-in">
                 <div className="flex items-center gap-2 text-amber-400 font-bold mb-4 text-lg border-b border-slate-700 pb-4"><Calendar size={24}/> Presensi Hari Libur</div>
@@ -359,7 +406,7 @@ export default function ScanPage() {
              </div>
         )}
 
-        {/* --- HASIL SCAN (DENGAN UI KHUSUS LEMBUR) --- */}
+        {/* --- HASIL SCAN (RESULT) --- */}
         {step === 'RESULT' && (
              <div className={`w-full p-8 rounded-3xl text-center border shadow-2xl animate-in zoom-in 
                 ${isSuccess 
@@ -367,15 +414,12 @@ export default function ScanPage() {
                     : 'bg-red-500/10 border-red-500/50'
                 }`}>
                 
-                {/* ICON UTAMA */}
                 <div className={`w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6 relative
                     ${isSuccess 
                         ? (isOvertime ? 'bg-indigo-500/20 text-indigo-400 ring-4 ring-indigo-500/10' : 'bg-green-500/20 text-green-400 ring-4 ring-green-500/10') 
                         : 'bg-red-500/20 text-red-400'
                     }`}>
                     {isSuccess ? (isOvertime ? <Moon size={48} className="fill-indigo-400"/> : <CheckCircle size={48} />) : <XCircle size={48} />}
-                    
-                    {/* Hiasan Bintang Jika Lembur */}
                     {isSuccess && isOvertime && <Star size={20} className="absolute top-0 right-0 text-yellow-400 fill-yellow-400 animate-bounce"/>}
                 </div>
 
@@ -385,13 +429,19 @@ export default function ScanPage() {
                 
                 <div className="h-px w-20 bg-white/10 mx-auto my-4"></div>
 
-                {/* PESAN KHUSUS */}
                 {isSuccess && isOvertime ? (
                     <div className="space-y-2">
-                        <p className="text-indigo-200 text-lg font-medium">Terima kasih atas dedikasinya!</p>
+                         {/* --- FITUR 2: SAPAAN LEMBUR --- */}
+                        <p className="text-indigo-200 text-lg font-medium">Terima kasih atas dedikasinya, {userName}!</p>
                         <p className="text-slate-400 text-sm flex items-center justify-center gap-1">
                             <Heart size={12} className="text-red-500 fill-red-500"/> Hati-hati di jalan pulang.
                         </p>
+                    </div>
+                ) : isSuccess ? (
+                    // --- FITUR 2: SAPAAN NORMAL ---
+                    <div className="space-y-2">
+                        <p className="text-green-200 text-lg font-medium">Terima kasih atas kontribusinya hari ini, {userName}!</p>
+                        <p className="text-slate-400 text-sm whitespace-pre-line">{status}</p>
                     </div>
                 ) : (
                     <p className="text-slate-200 text-lg leading-relaxed whitespace-pre-line font-medium">{status}</p>

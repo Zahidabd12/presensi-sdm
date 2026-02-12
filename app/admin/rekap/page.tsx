@@ -7,7 +7,7 @@ import {
   FileSpreadsheet, Edit, Save, X, UserX, CheckCircle, 
   Trash2, Search, Clock, Coffee, Stethoscope, User, 
   CalendarDays, Filter, DownloadCloud, AlertCircle, RefreshCw, Palmtree,
-  AlertTriangle
+  AlertTriangle, MessageSquare
 } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { updateAttendanceData, deleteAttendanceData } from '@/app/actions'
@@ -140,29 +140,22 @@ export default function RekapPage() {
 
         staffToProcess?.forEach(staff => {
             dateRange.forEach(dateStr => {
-                
-                // LOGIC 5 HARI KERJA (SENIN-JUMAT)
+                // LOGIC 5 HARI KERJA
                 const dateObj = new Date(dateStr)
-                const day = dateObj.getDay() // 0 = Minggu, 6 = Sabtu
+                const day = dateObj.getDay()
                 const isWeekend = day === 0 || day === 6
-
+                
                 const record = presenceData?.find(p => p.user_email === staff.email && p.date === dateStr)
                 
-                // --- ATURAN FILTER ---
-                // Jika WEEKEND dan TIDAK ADA ABSEN -> SKIP (Jangan dimasukkan ke laporan)
-                if (isWeekend && !record) {
-                    return // Lanjut ke tanggal berikutnya
-                }
+                // SKIP WEEKEND JIKA KOSONG
+                if (isWeekend && !record) return 
 
-                // Jika WEEKDAY -> Lanjut proses cek Alpha/Libur
-                
                 const holiday = holidayData?.find(h => h.tanggal === dateStr)
                 let status: any = 'ALPHA'
                 let holidayInfo = null
                 let stats = { rawHours: 0, paidHours: 0, wage: 0, isLess4Hours: false }
 
                 if (record) {
-                    // ADA ABSEN (Bisa Weekend/Weekday)
                     if (record.work_category === 'Izin') status = 'IZIN'
                     else if (record.work_category === 'Sakit') status = 'SAKIT'
                     else if (record.check_out) {
@@ -172,12 +165,10 @@ export default function RekapPage() {
                         status = 'KERJA'
                     }
                 } else {
-                    // TIDAK ADA ABSEN (Pasti Weekday karena Weekend sudah di-skip di atas)
                     if (holiday) {
                         status = 'LIBUR'
                         holidayInfo = holiday.keterangan
                     }
-                    // Else tetap ALPHA
                 }
 
                 tempTotalRevenue += stats.wage
@@ -194,7 +185,6 @@ export default function RekapPage() {
             })
         })
 
-        // Sorting
         finalReport.sort((a, b) => {
             if (a.dateStr !== b.dateStr) return new Date(b.dateStr).getTime() - new Date(a.dateStr).getTime()
             return a.name.localeCompare(b.name)
@@ -210,48 +200,77 @@ export default function RekapPage() {
     }
   }
 
-  // --- EXPORT, EDIT, SAVE (Standard) ---
   const handleExport = () => {
     if (tableData.length === 0) { showToast("Data kosong", 'error'); return }
     const dataToExport = tableData.map(item => ({
         Tanggal: item.dateStr, Nama: item.name, Status: item.status === 'KERJA' ? 'Belum Pulang' : item.status,
-        'Masuk': item.record?.check_in ? new Date(item.record.check_in).toLocaleTimeString('id-ID') : '-',
-        'Pulang': item.record?.check_out ? new Date(item.record.check_out).toLocaleTimeString('id-ID') : '-',
+        'Masuk': (item.status === 'HADIR' || item.status === 'KERJA') && item.record?.check_in ? new Date(item.record.check_in).toLocaleTimeString('id-ID') : '-',
+        'Pulang': (item.status === 'HADIR') && item.record?.check_out ? new Date(item.record.check_out).toLocaleTimeString('id-ID') : '-',
         'Durasi': item.stats?.rawHours ? formatDurationStr(item.stats.rawHours) : '-',
         'Gaji': item.stats?.wage || 0,
-        'Ket': item.status === 'LIBUR' ? item.holidayInfo : (item.record?.notes || '-')
+        'Keterangan': item.status === 'LIBUR' ? item.holidayInfo : (item.record?.notes || '-')
     }))
     generateExcel(dataToExport, `Gaji_${startDate}_sd_${endDate}.xlsx`)
     showToast("Berhasil Download Excel", 'success')
   }
 
   const handleEditClick = (item: StaffStatus) => {
-    if (item.status === 'IZIN') setFormType('IZIN'); else if (item.status === 'SAKIT') setFormType('SAKIT'); else setFormType('HADIR')
-    if (item.record) setEditingRow(item.record)
-    else setEditingRow({ id: '', user_email: item.email, user_name: item.name, date: item.dateStr, check_in: `${item.dateStr}T08:00`, check_out: null, duration: null, work_category: 'Administrasi', task_list: '', notes: '', weekend_reason: null })
+    // Set Form Type berdasarkan status data
+    if (item.status === 'IZIN') setFormType('IZIN')
+    else if (item.status === 'SAKIT') setFormType('SAKIT')
+    else setFormType('HADIR')
+
+    if (item.record) {
+        setEditingRow(item.record)
+    } else {
+        // Init data baru untuk Alpha/Libur
+        setEditingRow({ 
+            id: '', 
+            user_email: item.email, 
+            user_name: item.name, 
+            date: item.dateStr, 
+            check_in: `${item.dateStr}T08:00`, 
+            check_out: null, 
+            duration: null, 
+            work_category: 'Administrasi', 
+            task_list: '', 
+            notes: '', // Notes kosong awal
+            weekend_reason: null 
+        })
+    }
   }
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault(); if(!editingRow) return; setIsSaving(true)
     const dataToSave = { ...editingRow }
+    
+    // LOGIC FORM TYPE
     if (formType !== 'HADIR') { 
         dataToSave.work_category = formType === 'IZIN' ? 'Izin' : 'Sakit'; 
-        if(!dataToSave.date) dataToSave.date=startDate; dataToSave.check_in=`${dataToSave.date}T00:00:00`; dataToSave.check_out=`${dataToSave.date}T00:00:00` 
-    } else { if (dataToSave.work_category === 'Izin' || dataToSave.work_category === 'Sakit') dataToSave.work_category = 'Administrasi' }
+        // Reset jam jika izin/sakit
+        if(!dataToSave.date) dataToSave.date=startDate; 
+        dataToSave.check_in=`${dataToSave.date}T00:00:00`; 
+        dataToSave.check_out=`${dataToSave.date}T00:00:00` 
+    } else { 
+        if (dataToSave.work_category === 'Izin' || dataToSave.work_category === 'Sakit') dataToSave.work_category = 'Administrasi' 
+    }
     
     let errorMsg = null
+    // Cek ID untuk insert/update
     if (!dataToSave.id) {
-        const { error } = await supabase.from('attendance').insert({ user_email: dataToSave.user_email, user_name: dataToSave.user_name, date: dataToSave.date, check_in: dataToSave.check_in, check_out: dataToSave.check_out, work_category: dataToSave.work_category, notes: dataToSave.notes })
-        if (error) errorMsg = error.message
+        // Gunakan upsert di backend via actions.ts agar aman
+        const res = await updateAttendanceData(dataToSave) 
+        if (!res.success) errorMsg = res.message
     } else {
         const res = await updateAttendanceData(dataToSave)
         if (!res.success) errorMsg = res.message
     }
+
     if (!errorMsg) { await fetchData(); showToast('Tersimpan', 'success'); setEditingRow(null) } else showToast(errorMsg, 'error')
     setIsSaving(false)
   }
 
-  const handleDelete = async (id: string) => { if(!confirm("Hapus?")) return; setIsSaving(true); const res = await deleteAttendanceData(id); if(res.success) { await fetchData(); showToast('Terhapus', 'success') } setIsSaving(false) }
+  const handleDelete = async (id: string) => { if(!confirm("Hapus data?")) return; setIsSaving(true); const res = await deleteAttendanceData(id); if(res.success) { await fetchData(); showToast('Terhapus', 'success') } setIsSaving(false) }
   const showToast = (msg: string, type: 'success'|'error') => { setToast({message: msg, type}); setTimeout(() => setToast(null), 3000) }
   const toLocalISO = (str: string | null) => { if(!str) return ''; const d = new Date(str); return new Date(d.getTime() - (d.getTimezoneOffset() * 60000)).toISOString().slice(0, 16) }
 
@@ -259,14 +278,16 @@ export default function RekapPage() {
     <div className="max-w-7xl mx-auto space-y-8 font-sans">
       {toast && <div className={`fixed bottom-6 right-6 z-[100] px-6 py-4 rounded-xl shadow-2xl flex items-center gap-3 animate-in slide-in-from-bottom-5 border-l-8 ${toast.type === 'success' ? 'bg-white text-slate-800 border-green-500' : 'bg-white text-slate-800 border-red-500'}`}> <span className="font-bold">{toast.message}</span></div>}
 
+      {/* HEADER */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-        <div><h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><FileSpreadsheet className="text-blue-600" /> Rekap & Gaji</h1><p className="text-slate-500 text-sm mt-1">Pantau kehadiran, validasi jam kerja, dan estimasi gaji.</p></div>
+        <div><h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><FileSpreadsheet className="text-blue-600" /> Rekap & Gaji</h1><p className="text-slate-500 text-sm mt-1">Pantau kehadiran dan hitung gaji staff.</p></div>
         <div className="flex gap-3">
             <div className="bg-emerald-50 border border-emerald-200 px-5 py-2 rounded-xl flex flex-col items-end"><span className="text-[10px] uppercase font-bold text-emerald-600 tracking-wider">Total Estimasi Gaji</span><span className="text-xl font-bold text-emerald-800">{formatRupiah(totalRevenue)}</span></div>
             <button onClick={handleExport} disabled={tableData.length === 0} className="group flex items-center gap-3 px-5 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-bold shadow-lg shadow-blue-600/20 active:scale-95 transition disabled:opacity-50"><DownloadCloud size={20} /> Export</button>
         </div>
       </div>
 
+      {/* FILTER */}
       <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 space-y-4">
         <div className="flex items-center gap-2 text-slate-800 font-bold border-b border-slate-100 pb-2 mb-4"><Filter size={18} className="text-blue-600"/> Filter Data</div>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -277,9 +298,10 @@ export default function RekapPage() {
         </div>
       </div>
 
+      {/* TABLE */}
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden min-h-[400px] flex flex-col">
         <div className="px-6 py-4 bg-slate-50/50 border-b border-slate-100 flex flex-col md:flex-row justify-between items-center text-xs font-bold text-slate-500 gap-2">
-            <div className="flex gap-2"><span className="bg-white px-2 py-1 rounded border shadow-sm">FILTER: {mode === 'DAILY' ? 'HARIAN' : 'RANGE'}</span><span className="bg-white px-2 py-1 rounded border shadow-sm">DATA: {tableData.length} Baris</span></div>
+            <div className="flex gap-2"><span className="bg-white px-2 py-1 rounded border shadow-sm">MODE: {mode === 'DAILY' ? 'HARIAN' : 'RANGE'}</span><span className="bg-white px-2 py-1 rounded border shadow-sm">DATA: {tableData.length} Baris</span></div>
             <div className="flex flex-wrap gap-2 justify-end"><div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500"></span> Hadir</div><div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500"></span> Alpha</div><div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-pink-500"></span> Libur</div></div>
         </div>
         <div className="overflow-x-auto flex-1">
@@ -305,15 +327,62 @@ export default function RekapPage() {
         </div>
       </div>
 
+      {/* --- MODAL EDIT YANG DIPERBAIKI --- */}
       {editingRow && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[90] flex items-center justify-center p-4">
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-200">
                 <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50"><h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Edit size={18} className="text-blue-600"/> Edit Absensi</h3><button onClick={()=>setEditingRow(null)}><X size={20}/></button></div>
                 <div className="p-6 space-y-5">
-                    <div className="grid grid-cols-3 gap-2 bg-slate-100 p-1.5 rounded-xl"><button onClick={() => setFormType('HADIR')} className={`py-2 rounded-lg text-xs font-bold transition-all ${formType==='HADIR'?'bg-white shadow text-blue-600':'text-slate-500'}`}>Hadir Kerja</button><button onClick={() => setFormType('IZIN')} className={`py-2 rounded-lg text-xs font-bold transition-all ${formType==='IZIN'?'bg-white shadow text-amber-600':'text-slate-500'}`}>Izin</button><button onClick={() => setFormType('SAKIT')} className={`py-2 rounded-lg text-xs font-bold transition-all ${formType==='SAKIT'?'bg-white shadow text-purple-600':'text-slate-500'}`}>Sakit</button></div>
+                    
+                    {/* User Info */}
+                    <div className="flex items-center gap-3 bg-blue-50 p-3 rounded-xl border border-blue-100">
+                        <div className="w-10 h-10 bg-blue-200 rounded-full flex items-center justify-center text-blue-700 font-bold">{editingRow.user_name ? editingRow.user_name.charAt(0).toUpperCase() : 'U'}</div>
+                        <div><p className="font-bold text-slate-800">{editingRow.user_name}</p><p className="text-xs text-blue-600 font-medium">Tanggal: {new Date(editingRow.date).toLocaleDateString('id-ID', {dateStyle:'full'})}</p></div>
+                    </div>
+
+                    {/* Button Selector */}
+                    <div>
+                        <label className="text-xs font-bold text-slate-400 uppercase mb-2 block">Status Kehadiran</label>
+                        <div className="grid grid-cols-3 gap-2 bg-slate-100 p-1.5 rounded-xl">
+                            <button onClick={() => setFormType('HADIR')} className={`py-2 rounded-lg text-xs font-bold transition-all ${formType==='HADIR'?'bg-white shadow text-blue-600 ring-1 ring-blue-100':'text-slate-500 hover:bg-slate-200'}`}>Hadir Kerja</button>
+                            <button onClick={() => setFormType('IZIN')} className={`py-2 rounded-lg text-xs font-bold transition-all ${formType==='IZIN'?'bg-white shadow text-amber-600 ring-1 ring-amber-100':'text-slate-500 hover:bg-slate-200'}`}>Izin</button>
+                            <button onClick={() => setFormType('SAKIT')} className={`py-2 rounded-lg text-xs font-bold transition-all ${formType==='SAKIT'?'bg-white shadow text-purple-600 ring-1 ring-purple-100':'text-slate-500 hover:bg-slate-200'}`}>Sakit</button>
+                        </div>
+                    </div>
+
                     <form onSubmit={handleSave} className="space-y-4">
-                        {formType === 'HADIR' && ( <div className="grid grid-cols-2 gap-4"><div><label className="text-xs font-bold text-slate-500 mb-1 block">Masuk</label><input type="datetime-local" className="w-full border border-slate-300 p-2.5 rounded-lg" value={toLocalISO(editingRow.check_in)} onChange={e=>setEditingRow({...editingRow, check_in: new Date(e.target.value).toISOString()})}/></div><div><label className="text-xs font-bold text-slate-500 mb-1 block">Pulang</label><input type="datetime-local" className="w-full border border-slate-300 p-2.5 rounded-lg" value={toLocalISO(editingRow.check_out)} onChange={e=>setEditingRow({...editingRow, check_out: new Date(e.target.value).toISOString()})}/></div></div>)}
-                        <button disabled={isSaving} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 shadow-lg">{isSaving ? 'Menyimpan...':'Simpan Perubahan'}</button>
+                        {formType === 'HADIR' ? (
+                            <div className="grid grid-cols-2 gap-4 animate-in fade-in slide-in-from-top-2">
+                                <div><label className="text-xs font-bold text-slate-500 mb-1 block">Masuk</label><input type="datetime-local" className="w-full border border-slate-300 p-2.5 rounded-lg text-sm" value={toLocalISO(editingRow.check_in)} onChange={e=>setEditingRow({...editingRow, check_in: new Date(e.target.value).toISOString()})}/></div>
+                                <div><label className="text-xs font-bold text-slate-500 mb-1 block">Pulang</label><input type="datetime-local" className="w-full border border-slate-300 p-2.5 rounded-lg text-sm" value={toLocalISO(editingRow.check_out)} onChange={e=>setEditingRow({...editingRow, check_out: new Date(e.target.value).toISOString()})}/></div>
+                            </div>
+                        ) : (
+                            <div className="bg-amber-50 border border-amber-100 p-3 rounded-xl flex gap-3 items-start animate-in fade-in slide-in-from-top-2">
+                                <AlertCircle size={18} className="text-amber-500 mt-0.5"/>
+                                <p className="text-xs text-amber-800 leading-relaxed">Jam kerja akan direset. Anda <strong>WAJIB</strong> mengisi alasan pada kolom keterangan di bawah ini.</p>
+                            </div>
+                        )}
+
+                        <div>
+                            <label className="text-xs font-bold text-slate-500 mb-1 flex items-center gap-1">
+                                {formType==='HADIR' ? 'Catatan Tambahan (Opsional)' : 'Alasan Izin / Sakit (Wajib)'}
+                                {formType!=='HADIR' && <span className="text-red-500">*</span>}
+                            </label>
+                            <textarea 
+                                required={formType!=='HADIR'} 
+                                className={`w-full border p-3 rounded-xl h-24 focus:ring-2 focus:ring-blue-500 outline-none text-sm resize-none ${formType!=='HADIR' ? 'border-amber-300 bg-amber-50/30' : 'border-slate-300'}`}
+                                placeholder={formType==='HADIR' ? "Contoh: Lupa absen pulang..." : "Tulis alasan detail kenapa izin/sakit..."} 
+                                value={editingRow.notes||''} 
+                                onChange={e=>setEditingRow({...editingRow, notes: e.target.value})}
+                            />
+                        </div>
+
+                        <div className="pt-2 flex gap-3">
+                             <button type="button" onClick={()=>setEditingRow(null)} className="flex-1 py-3 text-slate-600 font-bold hover:bg-slate-100 rounded-xl transition">Batal</button>
+                             <button type="submit" disabled={isSaving} className="flex-1 bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 shadow-lg shadow-blue-600/20 active:scale-95 transition flex justify-center items-center gap-2">
+                                {isSaving ? <RefreshCw className="animate-spin" size={18}/> : <Save size={18}/>} Simpan
+                             </button>
+                        </div>
                     </form>
                 </div>
             </div>

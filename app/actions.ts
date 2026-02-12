@@ -3,6 +3,9 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 
+// --- CONFIG ---
+const MIN_WORK_HOURS = 4 // Validasi Server-side
+
 // --- SETUP CLIENT ---
 async function createSupabaseServer() {
   const cookieStore = await cookies()
@@ -27,39 +30,35 @@ export async function handleAttendance(weekendReason?: string) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, message: 'Sesi habis. Silakan login ulang.' }
 
-  // 1. TENTUKAN NAMA TAMPILAN
-  const emailName = user.email ? user.email.split('@')[0] : 'Partner'
-  let displayName = emailName.charAt(0).toUpperCase() + emailName.slice(1)
-
-  // Cek Database untuk nama terakhir
-  const { data: lastRecord } = await supabase
-    .from('attendance')
-    .select('user_name')
-    .eq('user_id', user.id)
-    .order('date', { ascending: false })
-    .limit(1)
+  // 1. TENTUKAN NAMA TAMPILAN (Ambil dari Tabel Staff dulu biar sinkron)
+  let displayName = user.email?.split('@')[0] || 'Partner'
+  
+  const { data: staffRecord } = await supabase
+    .from('staff')
+    .select('name')
+    .eq('email', user.email)
     .single()
-
-  if (lastRecord && lastRecord.user_name) {
-    displayName = lastRecord.user_name
-  }
+  
+  if (staffRecord) displayName = staffRecord.name
 
   const today = new Date().toISOString().split('T')[0]
   const now = new Date()
   const day = now.getDay()
   const isWeekend = day === 0 || day === 6
 
+  // Cek Record Hari Ini
   const { data: record, error: fetchError } = await supabase
     .from('attendance')
     .select('*')
-    .eq('user_id', user.id)
+    .eq('user_email', user.email) // Cek by Email biar konsisten
     .eq('date', today)
     .single()
 
+  // Handle error selain "Row not found"
   if (fetchError && fetchError.code !== 'PGRST116') return { success: false, message: 'Gagal koneksi database.' }
 
+  // --- LOGIC MASUK ---
   if (!record) {
-    // INSERT MASUK
     const { error } = await supabase.from('attendance').insert({
       user_id: user.id,
       user_email: user.email,
@@ -69,16 +68,31 @@ export async function handleAttendance(weekendReason?: string) {
       weekend_reason: weekendReason || null
     })
     
-    if (error) return { success: false, message: 'Gagal Masuk: ' + error.message }
+    // Handle Duplicate (Race Condition)
+    if (error) {
+        if (error.code === '23505') return { success: false, message: 'Anda sudah absen masuk barusan.' }
+        return { success: false, message: 'Gagal Masuk: ' + error.message }
+    }
+
     const weekendMsg = isWeekend ? `\n(Lembur Weekend: ${weekendReason})` : ''
     return { success: true, message: `Selamat Pagi, ${displayName}! ☀️\nSemangat berkarya.${weekendMsg}\nAbsen masuk berhasil!` }
 
-  } else if (record.check_in && !record.check_out) {
-    // UPDATE PULANG
-    const checkInTime = new Date(record.check_in)
-    const diffMs = now.getTime() - checkInTime.getTime()
-    const hours = Math.floor(diffMs / (1000 * 60 * 60))
-    const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60))
+  } 
+  // --- LOGIC PULANG ---
+  else if (record.check_in && !record.check_out) {
+    
+    // VALIDASI 4 JAM (SERVER SIDE PROTECTOR)
+    const checkInTime = new Date(record.check_in).getTime()
+    const diffHours = (now.getTime() - checkInTime) / (1000 * 60 * 60)
+
+    if (diffHours < MIN_WORK_HOURS) {
+        const remainingMin = Math.ceil((MIN_WORK_HOURS - diffHours) * 60)
+        return { success: false, message: `⚠️ Belum 4 Jam Kerja!\nMohon tunggu ${remainingMin} menit lagi untuk absen pulang.` }
+    }
+
+    // Hitung Durasi
+    const hours = Math.floor(diffHours)
+    const minutes = Math.floor((diffHours % 1) * 60)
     const durationStr = `${hours} jam ${minutes} menit`
 
     const { error } = await supabase.from('attendance').update({
@@ -99,9 +113,9 @@ export async function handleAttendance(weekendReason?: string) {
 export async function updateAttendanceData(formData: any) {
   const supabase = await createSupabaseServer()
   
-  // Hitung Durasi Otomatis
+  // Hitung Durasi Otomatis (Jika Hadir)
   let newDuration = formData.duration
-  if (formData.check_in && formData.check_out) {
+  if (formData.check_in && formData.check_out && formData.work_category !== 'Izin' && formData.work_category !== 'Sakit') {
       const start = new Date(formData.check_in).getTime()
       const end = new Date(formData.check_out).getTime()
       if (end > start) {
@@ -113,60 +127,40 @@ export async function updateAttendanceData(formData: any) {
           newDuration = "Error Waktu"
       }
   } else {
-      newDuration = null
+      // Jika Izin/Sakit durasi null atau custom
+      newDuration = formData.work_category === 'Izin' || formData.work_category === 'Sakit' ? '0 jam' : null
   }
 
-  // --- LOGIC: INSERT ATAU UPDATE ---
-  if (!formData.id) {
-    // A. JIKA TIDAK ADA ID -> INSERT BARU (Manual Input Admin)
-    
-    // Cari user_id dari history attendance atau staff table
-    const { data: historyUser } = await supabase
-        .from('attendance')
-        .select('user_id')
-        .eq('user_email', formData.user_email)
-        .limit(1)
-        .single()
-    
-    // Fallback: Jika tidak ada di history, generate random UUID (karena ini input manual admin)
-    const userId = historyUser?.user_id || crypto.randomUUID()
+  // Cari user_id (jika insert baru manual oleh admin)
+  let targetUserId = formData.user_id
+  if (!targetUserId) {
+      // Coba cari dari tabel staff
+      const { data: staff } = await supabase.from('staff').select('id').eq('email', formData.user_email).single()
+      targetUserId = staff?.id || crypto.randomUUID() // Fallback random jika staff blm terdaftar
+  }
 
-    const { error } = await supabase
-        .from('attendance')
-        .insert({
-            user_id: userId, 
-            user_email: formData.user_email,
-            user_name: formData.user_name,
-            date: formData.date,
-            check_in: formData.check_in,
-            check_out: formData.check_out,
-            work_category: formData.work_category,
-            task_list: formData.task_list,
-            notes: formData.notes,
-            weekend_reason: formData.weekend_reason,
-            duration: newDuration
-        })
-    
-    if (error) return { success: false, message: 'Gagal Input Baru: ' + error.message }
-
-  } else {
-    // B. JIKA ADA ID -> UPDATE DATA LAMA
-    const { error } = await supabase
-        .from('attendance')
-        .update({
+  // --- LOGIC UPSERT (Insert or Update) ---
+  // Menggunakan Upsert agar aman dari duplikat Unique Key (user_email, date)
+  const { error } = await supabase
+    .from('attendance')
+    .upsert({
+        id: formData.id || undefined, // Jika ID ada, dia update. Jika tidak, insert baru.
+        user_id: targetUserId,
+        user_email: formData.user_email,
         user_name: formData.user_name,
+        date: formData.date,
         check_in: formData.check_in,
         check_out: formData.check_out,
-        work_category: formData.work_category,
+        work_category: formData.work_category, // 'Izin', 'Sakit', 'Administrasi'
         task_list: formData.task_list,
-        notes: formData.notes,
+        notes: formData.notes, // <--- KETERANGAN IZIN/SAKIT MASUK SINI
         weekend_reason: formData.weekend_reason,
         duration: newDuration
-        })
-        .eq('id', formData.id)
+    }, {
+        onConflict: 'user_email, date' // <--- KUNCI PENJAGA DUPLIKAT
+    })
 
-    if (error) return { success: false, message: 'Gagal update: ' + error.message }
-  }
+  if (error) return { success: false, message: 'Gagal Simpan: ' + error.message }
 
   return { success: true, message: 'Data berhasil disimpan!' }
 }
@@ -182,7 +176,7 @@ export async function deleteAttendanceData(id: string) {
 }
 
 // ==========================================
-// 4. MANAJEMEN STAFF (MASTER DATA) - BARU!
+// 4. MANAJEMEN STAFF (MASTER DATA)
 // ==========================================
 
 export async function addStaff(formData: any) {
